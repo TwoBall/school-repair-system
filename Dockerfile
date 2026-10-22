@@ -17,11 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制依赖定义
 COPY package*.json ./
 
-# 安装生产依赖并自动编译原生模块
-RUN npm install --omit=dev
+# 安装依赖并自动编译原生模块
+RUN npm install
 
 # 复制工程源码
 COPY . .
+
+# 构建前端产物
+RUN npm run build
 
 # 创建持久化数据目录及上传图片目录
 RUN mkdir -p /app/data /app/uploads

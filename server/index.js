@@ -15,7 +15,9 @@ const SECRET_KEY = process.env.JWT_SECRET || 'repair-system-secret-salt-2026';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, '..', 'uploads');
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const DIST_DIR = path.join(__dirname, '..', 'dist');
+const LEGACY_PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const PUBLIC_DIR = fs.existsSync(DIST_DIR) ? DIST_DIR : LEGACY_PUBLIC_DIR;
 
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -887,6 +889,19 @@ app.post('/api/ticket', async (req, res) => {
   } catch (e) {
     return fail(res, e.message || '服务异常');
   }
+});
+
+// 独立入口页面支持
+app.get(['/worker', '/worker.html'], (req, res) => {
+  const workerPath = path.join(PUBLIC_DIR, 'worker.html');
+  if (fs.existsSync(workerPath)) return res.sendFile(workerPath);
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+});
+
+app.get(['/admin', '/admin.html'], (req, res) => {
+  const adminPath = path.join(PUBLIC_DIR, 'admin.html');
+  if (fs.existsSync(adminPath)) return res.sendFile(adminPath);
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
 // SPA 兜底：所有非 /api 路由返回 index.html
