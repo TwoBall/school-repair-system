@@ -148,11 +148,23 @@ function renderFormView() {
         </div>
         <div class="field">
           <span class="label" id="f_tpl_label">常见故障一键填入<span class="opt">点一下自动填好类别与描述，可再修改</span></span>
-          <div class="chips-group" id="f_tpl_chips" role="group" aria-labelledby="f_tpl_label">
-            ${REPAIR_TEMPLATES.slice(0, QUICK_TEMPLATE_COUNT)
-              .map((t) => `<span class="chip tpl-chip" data-act="use-tpl" data-val="${escapeHtml(t.name)}" role="button" tabindex="0">${icon('zap', 14)}${escapeHtml(t.name)}</span>`)
-              .join('')}
-            <span class="chip tpl-chip tpl-more" data-act="more-tpl" role="button" tabindex="0">${icon('clipboard', 14)}更多常见故障</span>
+          <div class="tpl-panel">
+            <div class="tpl-grid" id="f_tpl_chips" role="group" aria-labelledby="f_tpl_label">
+              ${REPAIR_TEMPLATES.slice(0, QUICK_TEMPLATE_COUNT)
+                .map((t) => `
+                  <button class="tpl-card" type="button" data-act="use-tpl" data-val="${escapeHtml(t.name)}" aria-pressed="false">
+                    <span class="tpl-card-top">
+                      ${icon('zap', 15)}
+                      <span class="tpl-card-name">${escapeHtml(t.name)}</span>
+                      <span class="tpl-chk" aria-hidden="true">${icon('check', 15)}</span>
+                    </span>
+                    <span class="tpl-card-meta">${escapeHtml(t.cat)} · 历史 ${t.hits} 次</span>
+                  </button>`)
+                .join('')}
+            </div>
+            <button class="tpl-all" type="button" data-act="more-tpl">
+              ${icon('clipboard', 15)}查看全部 ${REPAIR_TEMPLATES.length} 条常见故障${icon('chevronRight', 15)}
+            </button>
           </div>
         </div>
         <div class="field">
@@ -307,7 +319,15 @@ function resetRepairForm() {
   dupHits = [];
   dupDismissed = false;
   paintDupBar();
-  document.querySelectorAll('.tpl-chip').forEach((c) => c.classList.remove('active'));
+  clearTemplateSelection();
+}
+
+/** 清除模板选中态（表单上的卡片 + 弹窗里的 chips） */
+function clearTemplateSelection() {
+  document.querySelectorAll('.tpl-card, .tpl-chip').forEach((c) => {
+    c.classList.remove('active');
+    if (c.classList.contains('tpl-card')) c.setAttribute('aria-pressed', 'false');
+  });
 }
 
 /** 把草稿回填到表单 */
@@ -636,9 +656,11 @@ function applyTemplate(name, { closeAfter = false } = {}) {
     validateField('f_desc');
   }
 
-  // 高亮当前使用的模板（表单上的快捷区与弹窗里各有一份）
-  document.querySelectorAll('.tpl-chip').forEach((c) => {
-    c.classList.toggle('active', c.dataset.val === name);
+  // 高亮当前使用的模板（表单上的卡片与弹窗里的 chips 各有一份）
+  document.querySelectorAll('.tpl-card, .tpl-chip').forEach((c) => {
+    const on = c.dataset.val === name;
+    c.classList.toggle('active', on);
+    if (c.classList.contains('tpl-card')) c.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
 
   scheduleDraftSave();
@@ -655,7 +677,7 @@ function openTemplatePicker() {
   });
   const body = [...groups.entries()].map(([cat, list]) => `
       <div class="tpl-pick-group">
-        <div class="tpl-pick-cat">${categoryIcon(cat, 14)}${escapeHtml(cat)}</div>
+        <div class="tpl-pick-cat">${categoryIcon(cat, 14)}${escapeHtml(cat)}<span class="tpl-pick-num">${list.length} 条</span></div>
         <div class="chips-group">
           ${list.map((t) => `<span class="chip tpl-chip" data-act="pick-tpl" data-val="${escapeHtml(t.name)}" role="button" tabindex="0">${escapeHtml(t.name)}<span class="tpl-hits">${t.hits}</span></span>`).join('')}
         </div>
