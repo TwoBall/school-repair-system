@@ -1,9 +1,11 @@
 /**
  * 维修师傅工作台 - 前端主逻辑
+ * 升级：科技指挥中心质感 + 深浅色切换 + 拇指热区大操作 + 一键拨号呼叫胶囊 + 顺丰级时间轴
  */
 import '../common/style.css';
 import { request, uploadImage, STATUS_MAP } from '../common/api.js';
-import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage } from '../common/utils.js';
+import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, initTheme } from '../common/utils.js';
+import { renderStepperTimeline } from '../reporter/main.js';
 
 let workerToken = localStorage.getItem('bx_worker_token') || '';
 let workerUser = JSON.parse(localStorage.getItem('bx_worker_user') || 'null');
@@ -11,6 +13,7 @@ let currentTab = 'tasks'; // 'tasks' | 'history'
 let workerTickets = [];
 
 async function init() {
+  initTheme();
   if (!workerToken || !workerUser) {
     renderLoginView();
   } else {
@@ -23,28 +26,31 @@ function renderLoginView() {
     <header class="topbar">
       <div class="nav-wrap">
         <div class="brand">
-          <span style="font-size: 20px;">🔧</span>
-          <div class="title">学校总务报修 - 维修师傅端</div>
+          <span style="font-size: 22px;">🔧</span>
+          <div class="title">学校总务报修 - 维修师傅工作台</div>
         </div>
-        <div class="portal-tag">师傅工作台</div>
+        <div class="topbar-actions">
+          <div class="portal-tag">师傅工作台</div>
+          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题">☀️</button>
+        </div>
       </div>
     </header>
 
-    <main class="app-container" style="max-width: 440px; margin-top: 24px;">
+    <main class="app-container" style="max-width: 440px; margin-top: 32px;">
       <div class="card">
         <div class="card-title">
           <span>👷 师傅登录</span>
           <span class="text-muted">凭工号/手机号登录</span>
         </div>
         <div class="form-group">
-          <label>师傅工号 / 手机号</label>
+          <label>师傅工号 / 预设手机号</label>
           <input type="text" id="w_login_user" placeholder="例如：13800000001" autocomplete="username">
         </div>
         <div class="form-group">
           <label>登录密码</label>
           <input type="password" id="w_login_pwd" placeholder="初始密码 worker888" autocomplete="current-password">
         </div>
-        <button class="btn btn-ok" id="btnWorkerLogin" style="margin-top: 8px;">登 录 工 作 台</button>
+        <button class="btn btn-ok" id="btnWorkerLogin" style="margin-top: 10px;">登 录 工 作 台</button>
         <div class="text-muted" style="text-align: center; margin-top: 14px; font-size: 12.5px;">
           初始账号为预设手机号，密码可登录后自主修改
         </div>
@@ -81,13 +87,14 @@ function renderWorkerView() {
     <header class="topbar">
       <div class="nav-wrap">
         <div class="brand">
-          <span style="font-size: 20px;">👷</span>
+          <span style="font-size: 22px;">👷</span>
           <div>
             <div class="title">${escapeHtml(workerUser.name)}师傅的工作台</div>
           </div>
         </div>
-        <div class="user-info">
-          <button class="btn btn-sm btn-ghost" id="btnChangePwd" style="background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.4); color: #fff;">改密</button>
+        <div class="topbar-actions">
+          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题">☀️</button>
+          <button class="btn btn-sm btn-ghost" id="btnChangePwd">改密</button>
           <button class="btn btn-sm btn-danger" id="btnLogoutWorker">退出</button>
         </div>
       </div>
@@ -98,7 +105,7 @@ function renderWorkerView() {
     <nav class="tabbar">
       <button class="tabbar-item active" id="tabTasksBtn">
         <span class="icon">🔧</span>
-        <span>待办任务</span>
+        <span>待办工单</span>
       </button>
       <button class="tabbar-item" id="tabHistoryBtn">
         <span class="icon">📜</span>
@@ -147,7 +154,10 @@ async function loadWorkerTickets() {
         return;
       }
       container.innerHTML = `
-        <div class="card" style="padding: 10px 14px; font-weight: 600;">已累计完工: ${historyList.length} 单</div>
+        <div class="card" style="padding: 12px 16px; font-weight: 700; color: var(--cyan); display: flex; justify-content: space-between; align-items: center;">
+          <span>📋 累计服务档案</span>
+          <span style="font-size: 13px;">已完工 ${historyList.length} 单</span>
+        </div>
         ${historyList.map((t) => renderTicketCard(t)).join('')}
       `;
     }
@@ -165,32 +175,53 @@ function renderTicketCard(t) {
   const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">⚠️ ${escapeHtml(t.timeoutReason)}</span>` : '';
   const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">🔔 催单(${t.remindCount})</span>` : '';
 
-  let actionsHtml = `<button class="btn btn-sm btn-ghost" onclick="window.openWorkerDetail('${escapeHtml(t.id)}')">查看详情</button> `;
+  // 拇指热区快捷大操作按钮
+  let primaryActionBtn = '';
   if (t.status === 'assigned') {
-    actionsHtml += `<button class="btn btn-sm btn-ok" onclick="window.workerAccept('${escapeHtml(t.id)}')">接单到场</button> `;
+    primaryActionBtn = `<button class="btn btn-ok" style="flex: 1;" onclick="window.workerAccept('${escapeHtml(t.id)}')">⚡ 立即接单前往现场</button>`;
+  } else if (t.status === 'working') {
+    primaryActionBtn = `<button class="btn btn-ok" style="flex: 1;" onclick="window.openFinishModal('${escapeHtml(t.id)}')">📷 拍照完工并提交</button>`;
   }
-  if (t.status === 'working') {
-    actionsHtml += `<button class="btn btn-sm btn-ok" onclick="window.openFinishModal('${escapeHtml(t.id)}')">完工提交</button> `;
-  }
+
+  const actionsHtml = `
+    <button class="btn btn-sm btn-ghost" onclick="window.openWorkerDetail('${escapeHtml(t.id)}')">详情与留言</button>
+    ${primaryActionBtn}
+  `;
 
   return `
     <div class="ticket-card ${t.isTimeout ? 'is-timeout' : ''}">
       <div class="ticket-head">
-        <span class="ticket-no">${escapeHtml(t.id)}</span>
-        <div style="display: flex; gap: 4px;">
+        <span class="ticket-no">#${escapeHtml(t.id)}</span>
+        <div style="display: flex; gap: 4px; align-items: center;">
           ${remindBadge}
           ${timeoutBadge}
           <span class="badge ${st.cls}">${st.label}</span>
         </div>
       </div>
-      <div class="ticket-title">${escapeHtml(t.building)} ${escapeHtml(t.room)}</div>
+
+      <!-- 醒目地点标签 -->
+      <div class="worker-location-tag">
+        <span>📍</span>
+        <span>${escapeHtml(t.building)} · ${escapeHtml(t.room)}</span>
+      </div>
+
+      <!-- 报修人一键呼叫胶囊 (UX 升级) -->
+      <div style="margin: 8px 0 10px;">
+        <a class="worker-call-btn" href="tel:${escapeHtml(t.phone)}">
+          <span>📞 一键呼叫报修人：</span>
+          <span>${escapeHtml(t.reporter)} (${escapeHtml(t.phone)})</span>
+        </a>
+      </div>
+
       <div class="ticket-meta">
         <span>类别：${escapeHtml(t.category)}</span> | 
-        <span>紧急度：<strong style="${t.urgency === '紧急' ? 'color: var(--danger);' : ''}">${escapeHtml(t.urgency)}</strong></span><br>
-        <span>报修人：${escapeHtml(t.reporter)} 📱 <a href="tel:${escapeHtml(t.phone)}" style="color: var(--brand); text-decoration: underline;">${escapeHtml(t.phone)}</a></span>
+        <span>紧急度：<strong style="${t.urgency === '紧急' ? 'color: var(--danger);' : ''}">${escapeHtml(t.urgency)}</strong></span> | 
+        <span>派单时间：${formatShortTime(t.createdAt)}</span>
       </div>
+
       <div class="ticket-desc">${escapeHtml(t.desc)}</div>
-      <div class="ticket-actions">${actionsHtml}</div>
+
+      <div class="worker-quick-fab">${actionsHtml}</div>
     </div>
   `;
 }
@@ -201,7 +232,7 @@ window.workerAccept = async (id) => {
       method: 'POST',
       token: workerToken,
     });
-    toast('接单成功，请尽快到场排查处理！');
+    toast('⚡ 接单成功，请尽快到场排查处理！');
     loadWorkerTickets();
   } catch (err) {
     toast(err.message);
@@ -229,7 +260,7 @@ window.openFinishModal = (id) => {
         </label>
       </div>
     </div>
-    <button class="btn btn-ok" id="btnSubmitFinish">提交完工并通知验收</button>
+    <button class="btn btn-ok" id="btnSubmitFinish">⚡ 提交完工并通知验收</button>
   `);
 
   function renderFinishPhotos() {
@@ -285,7 +316,7 @@ window.openFinishModal = (id) => {
         token: workerToken,
         body: { result, photos: finishPhotos },
       });
-      toast('完工提交成功，已通知报修人验收！');
+      toast('🎉 完工提交成功，已通知报修人验收！');
       closeModal();
       loadWorkerTickets();
     } catch (err) {
@@ -300,38 +331,47 @@ window.openWorkerDetail = async (id) => {
     const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
 
     const photosHtml = t.photos && t.photos.length > 0
-      ? `<div style="margin-top: 10px;"><strong>现场报修照片：</strong><div class="photos-grid">${t.photos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div></div>`
+      ? `<div style="margin-top: 10px;"><strong>报修现场破损照片：</strong><div class="photos-grid">${t.photos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div></div>`
       : '';
+
+    const stepperHtml = renderStepperTimeline(t);
 
     openModal(`
       <div class="modal-header">
-        <h3>工单详情 ${escapeHtml(t.id)}</h3>
+        <h3>工单详情 #${escapeHtml(t.id)}</h3>
         <button class="modal-close-btn" onclick="window.closeModal()">×</button>
       </div>
-      <div style="background: #f8fafc; border-radius: 9px; padding: 10px; font-size: 13.5px; line-height: 1.7;">
-        <div><span class="badge ${st.cls}">${st.label}</span> <strong style="font-size: 16px; margin-left: 4px;">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong></div>
-        <div><strong>故障分类：</strong>${escapeHtml(t.category)} | <strong>紧急度：</strong>${escapeHtml(t.urgency)}</div>
-        <div><strong>报修人：</strong>${escapeHtml(t.reporter)} 📱 <a href="tel:${escapeHtml(t.phone)}" style="color: var(--brand); font-weight: 700;">${escapeHtml(t.phone)} (一键呼叫)</a></div>
+      <div style="background: var(--card-alt); border: 1px solid var(--border); border-radius: 9px; padding: 12px; font-size: 13.5px; line-height: 1.8;">
+        <div><span class="badge ${st.cls}">${st.label}</span> <strong style="font-size: 16.5px; margin-left: 6px;">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong></div>
+        <div><strong>故障分类：</strong>${escapeHtml(t.category)} | <strong>紧急程度：</strong>${escapeHtml(t.urgency)}</div>
+        <div style="margin: 6px 0;">
+          <a class="worker-call-btn" href="tel:${escapeHtml(t.phone)}">📞 一键呼叫报修人：${escapeHtml(t.reporter)} (${escapeHtml(t.phone)})</a>
+        </div>
         <div><strong>提交时间：</strong>${formatTime(t.createdAt)}</div>
-        <div style="margin-top: 4px;"><strong>故障描述：</strong>${escapeHtml(t.desc)}</div>
+        <div style="margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px;">
+          <strong>故障描述：</strong>${escapeHtml(t.desc)}
+        </div>
         ${photosHtml}
       </div>
-      <div style="background: #f8fafc; border-radius: 9px; padding: 10px; margin-top: 14px; border: 1px solid var(--border);">
-        <div style="font-weight: 600; font-size: 13.5px; margin-bottom: 8px;">💬 现场留言与沟通 (${(t.comments || []).length})</div>
-        <div style="display: flex; flex-direction: column; gap: 8px;">
+
+      ${stepperHtml}
+
+      <div style="background: var(--card-alt); border-radius: 9px; padding: 12px; margin-top: 14px; border: 1px solid var(--border);">
+        <div style="font-weight: 700; font-size: 13.5px; margin-bottom: 8px; color: var(--text);">💬 现场三方留言沟通板 (${(t.comments || []).length})</div>
+        <div style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto;">
           ${(t.comments || []).length === 0 ? `<div class="text-muted" style="font-size: 12px;">暂无留言</div>` : (t.comments || []).map((c) => `
             <div style="border-bottom: 1px dashed var(--border); padding-bottom: 4px;">
               <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);">
                 <span><strong>${escapeHtml(c.senderName)}</strong> (${escapeHtml(c.senderRole === 'worker' ? '我' : c.senderRole === 'admin' ? '总务处' : '报修人')})</span>
                 <span>${formatShortTime(c.createdAt)}</span>
               </div>
-              <div style="font-size: 13px; color: #1e293b; margin-top: 2px;">${escapeHtml(c.content)}</div>
+              <div style="font-size: 13px; color: var(--text); margin-top: 2px;">${escapeHtml(c.content)}</div>
             </div>
           `).join('')}
         </div>
         <div style="display: flex; gap: 6px; margin-top: 10px;">
-          <input type="text" id="dlgCommentInput" placeholder="留言告知预计到场时间等...">
-          <button class="btn btn-sm" id="dlgSendCommentBtn" style="flex: none; width: 65px;">发送</button>
+          <input type="text" id="dlgCommentInput" placeholder="留言告知预计到场时间或备件情况...">
+          <button class="btn btn-sm" id="dlgSendCommentBtn" style="flex: none; width: 70px;">发送</button>
         </div>
       </div>
     `);

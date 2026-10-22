@@ -1,15 +1,26 @@
 /**
  * 师生在线报修专区 - 前端主逻辑
+ * 升级：智慧后勤大屏科技质感 + 深浅色切换 + 常见故障一键模板 + 顺丰级沉浸式流转时间轴
  */
 import '../common/style.css';
 import { request, uploadImage, fetchConfig, STATUS_MAP } from '../common/api.js';
-import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage } from '../common/utils.js';
+import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, initTheme, copyText } from '../common/utils.js';
 
 let appConfig = {
   schoolName: '学校总务报修服务中心',
   buildings: ['教学楼A栋', '教学楼B栋', '教学楼C栋', '实验楼', '图书馆', '行政楼', '食堂', '体育馆', '学生公寓1栋', '学生公寓2栋'],
   categories: ['水电照明', '门窗家具', '空调风扇', '给排水/卫浴', '多媒体设备', '墙面地面', '电梯设施', '其他'],
 };
+
+// 常见故障智能快捷预设 (一键带入场景)
+const PRESETS = [
+  { icon: '🚰', title: '水龙头漏水', cat: '给排水/卫浴', urg: '普通', desc: '水龙头松动或关不紧，持续滴漏水，需要检修或更换阀芯。' },
+  { icon: '💡', title: '教室灯管不亮', cat: '水电照明', urg: '普通', desc: '室内日光灯闪烁或彻底不亮，疑似灯管损坏或镇流器故障。' },
+  { icon: '❄️', title: '空调不冷/漏水', cat: '空调风扇', urg: '较急', desc: '开机运行无冷风/制冷效果差，空调内机有滴水现象。' },
+  { icon: '🖥️', title: '多媒体投影黑屏', cat: '多媒体设备', urg: '较急', desc: '教学多媒体设备无法开机或投影仪无信号输入，急需排查。' },
+  { icon: '🚪', title: '门锁门窗损坏', cat: '门窗家具', urg: '普通', desc: '门锁锁舌卡滞损坏，无法正常锁门或合页脱落。' },
+  { icon: '🚽', title: '厕所下水堵塞', cat: '给排水/卫浴', urg: '紧急', desc: '下水道返水堵塞排污不畅，现场有异味，需紧急疏通排障。' },
+];
 
 let currentTab = 'form'; // 'form' | 'mine'
 let myPhone = localStorage.getItem('bx_reporter_phone') || '';
@@ -18,6 +29,7 @@ let myTickets = [];
 
 // 初始化
 async function init() {
+  initTheme();
   renderLayout();
   try {
     const cfg = await fetchConfig();
@@ -43,12 +55,15 @@ function renderLayout() {
     <header class="topbar">
       <div class="nav-wrap">
         <div class="brand">
-          <span style="font-size: 20px;">🏫</span>
+          <span style="font-size: 22px;">🏫</span>
           <div>
             <div class="title" id="portalSchoolName">学校总务报修系统</div>
           </div>
         </div>
-        <div class="portal-tag">师生报修通道</div>
+        <div class="topbar-actions">
+          <div class="portal-tag">师生报修专区</div>
+          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题">☀️</button>
+        </div>
       </div>
     </header>
 
@@ -93,11 +108,24 @@ function renderFormView() {
   const bldgOptions = appConfig.buildings.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
   const catChips = appConfig.categories.map((c, i) => `<span class="chip ${i === 0 ? 'active' : ''}" data-val="${escapeHtml(c)}">${escapeHtml(c)}</span>`).join('');
 
+  const presetsHtml = PRESETS.map((p, idx) => `
+    <div class="preset-tile" data-idx="${idx}">
+      <span>${p.icon}</span>
+      <span>${escapeHtml(p.title)}</span>
+    </div>
+  `).join('');
+
   return `
     <div class="card">
       <div class="card-title">
         <span>📝 填写报修单</span>
-        <span class="text-muted">免注册 · 实时进度可查</span>
+        <span class="text-muted">免注册 · 实时流转可查</span>
+      </div>
+
+      <!-- 快捷故障一键填单模板 (UX 升级) -->
+      <div class="presets-wrap">
+        <div class="presets-label">⚡ 常见故障一键模板（点击自动填单）：</div>
+        <div class="presets-grid" id="presetsGrid">${presetsHtml}</div>
       </div>
 
       <div class="grid-form">
@@ -127,7 +155,7 @@ function renderFormView() {
 
       <div class="form-group">
         <label><span class="req">*</span>故障现象描述</label>
-        <textarea id="f_desc" placeholder="请详细描述损坏情况、受损部位或具体现场问题..."></textarea>
+        <textarea id="f_desc" placeholder="请详细描述损坏情况、受损部位或现场具体问题..."></textarea>
       </div>
 
       <div class="form-group">
@@ -162,7 +190,7 @@ function renderFormView() {
         </div>
       </div>
 
-      <button class="btn" id="btnSubmitTicket" style="margin-top: 10px;">立即提交报修申请</button>
+      <button class="btn" id="btnSubmitTicket" style="margin-top: 10px;">⚡ 立即提交报修申请</button>
     </div>
   `;
 }
@@ -181,25 +209,47 @@ function bindFormEvents() {
     }
   });
 
-  // 图片上传事件
-  const fileInput = document.getElementById('photoFileInput');
-  if (fileInput) {
-    fileInput.onchange = async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      toast('正在上传图片...');
-      try {
-        const res = await uploadImage(file);
-        uploadedPhotos.push(res.url);
-        renderPhotoGrid();
-        toast('图片上传成功');
-      } catch (err) {
-        toast(`上传失败: ${err.message}`);
+  // 快捷场景预设点击绑定
+  const presetsGrid = document.getElementById('presetsGrid');
+  if (presetsGrid) {
+    presetsGrid.onclick = (e) => {
+      const tile = e.target.closest('.preset-tile');
+      if (!tile) return;
+      const idx = parseInt(tile.dataset.idx, 10);
+      const p = PRESETS[idx];
+      if (!p) return;
+
+      // 自动选故障类别
+      const catChips = document.querySelectorAll('#f_cat_chips .chip');
+      catChips.forEach((c) => {
+        if (c.dataset.val === p.cat || c.innerText.trim() === p.cat) {
+          c.click();
+        }
+      });
+
+      // 自动选紧急度
+      const urgChips = document.querySelectorAll('#f_urg_chips .chip');
+      urgChips.forEach((c) => {
+        if (c.dataset.val === p.urg) {
+          c.click();
+        }
+      });
+
+      // 自动填入故障描述
+      const descEl = document.getElementById('f_desc');
+      if (descEl) {
+        descEl.value = p.desc;
+        descEl.focus();
       }
+
+      toast(`已填入【${p.title}】模板，可修改地点后提交`);
     };
   }
 
-  // 提交报修单
+  // 照片上传绑定
+  renderPhotoGrid();
+
+  // 提交工单
   const btnSubmit = document.getElementById('btnSubmitTicket');
   if (btnSubmit) {
     btnSubmit.onclick = async () => {
@@ -208,14 +258,31 @@ function bindFormEvents() {
       const desc = document.getElementById('f_desc').value.trim();
       const reporter = document.getElementById('f_reporter').value.trim();
       const phone = document.getElementById('f_phone').value.trim();
-      const category = (document.querySelector('#f_cat_chips .chip.active') || {}).dataset?.val || '水电照明';
-      const urgency = (document.querySelector('#f_urg_chips .chip.active') || {}).dataset?.val || '普通';
-      const identity = (document.querySelector('#f_who_chips .chip.active') || {}).dataset?.val || '教职工';
 
-      if (!room) { toast('请填写楼层/房间号'); return; }
-      if (!desc) { toast('请详细填写故障描述'); return; }
-      if (!reporter) { toast('请填写联系人姓名'); return; }
-      if (!/^1\d{10}$/.test(phone)) { toast('请填写正确的11位手机号码'); return; }
+      const catEl = document.querySelector('#f_cat_chips .chip.active');
+      const urgEl = document.querySelector('#f_urg_chips .chip.active');
+      const whoEl = document.querySelector('#f_who_chips .chip.active');
+
+      const category = catEl ? catEl.dataset.val : '水电照明';
+      const urgency = urgEl ? urgEl.dataset.val : '普通';
+      const identity = whoEl ? whoEl.dataset.val : '教职工';
+
+      if (!room) {
+        toast('请填写具体的楼层/房间号');
+        return;
+      }
+      if (!desc) {
+        toast('请填写故障现象描述');
+        return;
+      }
+      if (!reporter) {
+        toast('请填写联系人姓名');
+        return;
+      }
+      if (!/^1\d{10}$/.test(phone)) {
+        toast('请填写正确的11位手机号码');
+        return;
+      }
 
       btnSubmit.disabled = true;
       btnSubmit.textContent = '正在提交...';
@@ -247,7 +314,7 @@ function bindFormEvents() {
         toast(err.message || '提交失败');
       } finally {
         btnSubmit.disabled = false;
-        btnSubmit.textContent = '立即提交报修申请';
+        btnSubmit.textContent = '⚡ 立即提交报修申请';
       }
     };
   }
@@ -303,7 +370,7 @@ function renderMineView() {
       <div class="card-title"><span>🔍 我的报修记录查询</span></div>
       <div style="display: flex; gap: 8px;">
         <input type="tel" id="inputQueryPhone" maxlength="11" placeholder="输入报修填写的11位手机号" value="${escapeHtml(myPhone)}">
-        <button class="btn btn-sm" id="btnQuery" style="flex: none; width: 85px;">查 询</button>
+        <button class="btn btn-sm" id="btnQuery" style="flex: none; width: 90px;">查 询</button>
       </div>
     </div>
     <div id="ticketsListContainer">
@@ -356,7 +423,7 @@ function renderTicketCard(t) {
     ? `<div class="photos-grid" style="margin-top: 8px;">${t.photos.map((p) => `<div class="photo-item" style="width: 58px; height: 58px;"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div>`
     : '';
 
-  let actionsHtml = `<button class="btn btn-sm btn-ghost" onclick="window.openDetail('${escapeHtml(t.id)}')">查看详情</button> `;
+  let actionsHtml = `<button class="btn btn-sm btn-ghost" onclick="window.openDetail('${escapeHtml(t.id)}')">查看详情与轨迹</button> `;
   if (t.status === 'pending' || t.status === 'assigned' || t.status === 'working') {
     actionsHtml += `<button class="btn btn-sm btn-warn" onclick="window.remindTicket('${escapeHtml(t.id)}')">加急催单</button> `;
   }
@@ -368,7 +435,7 @@ function renderTicketCard(t) {
     <div class="ticket-card ${t.isTimeout ? 'is-timeout' : ''}">
       <div class="ticket-head">
         <span class="ticket-no">${escapeHtml(t.id)}</span>
-        <div style="display: flex; gap: 4px;">
+        <div style="display: flex; gap: 4px; align-items: center;">
           ${remindBadge}
           ${timeoutBadge}
           <span class="badge ${st.cls}">${st.label}</span>
@@ -388,6 +455,98 @@ function renderTicketCard(t) {
   `;
 }
 
+// ----------------- 顺丰/京东快递级沉浸式流转时间轴 (UX 核心升级) -----------------
+export function renderStepperTimeline(t) {
+  const s = t.status;
+  const isRejected = s === 'rejected';
+
+  // 计算节点状态: done / current / upcoming
+  // 1. 提交
+  const step1Done = true;
+  // 2. 受理/派工
+  const step2Done = ['assigned', 'working', 'done', 'closed'].includes(s);
+  const step2Cur = s === 'pending';
+  // 3. 师傅接单与排查
+  const step3Done = ['working', 'done', 'closed'].includes(s);
+  const step3Cur = s === 'assigned';
+  // 4. 完工待验收
+  const step4Done = ['closed'].includes(s);
+  const step4Cur = s === 'done';
+  // 5. 验收评价
+  const step5Done = s === 'closed';
+
+  return `
+    <div class="stepper-wrap">
+      <div style="font-weight: 700; font-size: 14px; margin-bottom: 10px; color: var(--cyan); display: flex; align-items: center; gap: 6px;">
+        <span>📦 报修流转轨迹（顺丰级全程可溯）</span>
+      </div>
+      <div class="stepper-track">
+        <!-- 节点 1: 提交报修 -->
+        <div class="stepper-item ${step1Done ? 'done' : ''}">
+          <div class="stepper-node">✓</div>
+          <div class="stepper-header">
+            <span class="stepper-title">工单已提交</span>
+            <span class="stepper-time">${formatShortTime(t.createdAt)}</span>
+          </div>
+          <div class="stepper-desc">报修人 <strong>${escapeHtml(t.reporter)}</strong> (${escapeHtml(t.identity || '师生')}) 发起报修申请</div>
+        </div>
+
+        <!-- 节点 2: 总务处受理与派工 -->
+        <div class="stepper-item ${step2Done ? 'done' : (step2Cur ? 'current' : '')}">
+          <div class="stepper-node">${step2Done ? '✓' : (step2Cur ? '2' : '2')}</div>
+          <div class="stepper-header">
+            <span class="stepper-title">${isRejected ? '工单已驳回' : (t.assignee ? '总务处已派工' : '总务处受理中')}</span>
+            <span class="stepper-time">${step2Done ? formatShortTime(t.createdAt) : ''}</span>
+          </div>
+          <div class="stepper-desc">
+            ${isRejected
+              ? `<span style="color: var(--danger);">理由：${escapeHtml(t.timeline?.slice(-1)[0]?.note || '未符合报修要求')}</span>`
+              : (t.assignee ? `已指派专职师傅：<strong style="color: var(--brand);">${escapeHtml(t.assignee)}</strong>` : '总务处值班老师正在审核并派发至责任维修班组...')}
+          </div>
+        </div>
+
+        <!-- 节点 3: 师傅接单施工 -->
+        <div class="stepper-item ${step3Done ? 'done' : (step3Cur ? 'current' : '')}">
+          <div class="stepper-node">${step3Done ? '✓' : '3'}</div>
+          <div class="stepper-header">
+            <span class="stepper-title">${s === 'working' ? '师傅施工排查中' : (step3Done ? '已到场施工' : '师傅待接单')}</span>
+            <span class="stepper-time"></span>
+          </div>
+          <div class="stepper-desc">
+            ${s === 'working'
+              ? `<span style="color: #a855f7;">师傅已确认接单，正在现场检修配件及处理...</span>`
+              : (s === 'assigned' ? '工单已推送到责任师傅手机工作台，等待接单出发' : (step3Done ? '现场维修处置完毕' : '待师傅接单前往现场'))}
+          </div>
+        </div>
+
+        <!-- 节点 4: 完工待验收 -->
+        <div class="stepper-item ${step4Done ? 'done' : (step4Cur ? 'current' : '')}">
+          <div class="stepper-node">${step4Done ? '✓' : '4'}</div>
+          <div class="stepper-header">
+            <span class="stepper-title">${t.result ? '维修已完工' : '待完工'}</span>
+            <span class="stepper-time">${t.completedAt ? formatShortTime(t.completedAt) : ''}</span>
+          </div>
+          <div class="stepper-desc">
+            ${t.result ? `维修结论：<strong>${escapeHtml(t.result)}</strong>` : '待维修师傅上传现场修复完好照片并提交完工'}
+          </div>
+        </div>
+
+        <!-- 节点 5: 验收评价结单 -->
+        <div class="stepper-item ${step5Done ? 'done' : ''}">
+          <div class="stepper-node">${step5Done ? '✓' : '5'}</div>
+          <div class="stepper-header">
+            <span class="stepper-title">${t.rating ? '已验收结单' : '待验收评价'}</span>
+            <span class="stepper-time">${t.closedAt ? formatShortTime(t.closedAt) : ''}</span>
+          </div>
+          <div class="stepper-desc">
+            ${t.rating ? `师生综合评价：${'⭐'.repeat(t.rating.score || 5)} (${escapeHtml(t.rating.comment || '满意')})` : '师傅修好后，师生核验通过并打分结单'}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 // ----------------- 工单详情弹窗 -----------------
 window.openDetail = async (id) => {
   try {
@@ -395,7 +554,10 @@ window.openDetail = async (id) => {
     const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
 
     const timeoutAlert = t.isTimeout
-      ? `<div style="background: var(--danger-light); color: var(--danger); padding: 8px 12px; border-radius: 8px; font-weight: 600; margin-bottom: 12px; font-size: 13px;">⏱️ SLA 超时预警：【${escapeHtml(t.timeoutReason)}】已触发加快督办！</div>`
+      ? `<div style="background: var(--danger-light); color: var(--danger); border: 1px solid var(--danger); padding: 10px 14px; border-radius: 8px; font-weight: 700; margin-bottom: 12px; font-size: 13.5px; display: flex; align-items: center; gap: 8px;">
+          <span class="pulse-dot danger"></span>
+          <span>⏱️ SLA 超时预警：【${escapeHtml(t.timeoutReason)}】已触发加快督办！</span>
+        </div>`
       : '';
 
     const photosHtml = t.photos && t.photos.length > 0
@@ -403,74 +565,69 @@ window.openDetail = async (id) => {
       : '';
 
     const finishHtml = t.result
-      ? `<div style="background: var(--ok-light); border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: 13.5px;">
-          <strong style="color: var(--ok);">维修结果：</strong>${escapeHtml(t.result)}
-          ${t.finishPhotos && t.finishPhotos.length > 0 ? `<div class="photos-grid" style="margin-top: 6px;">${t.finishPhotos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div>` : ''}
+      ? `<div style="background: var(--ok-light); border: 1px solid var(--ok); border-radius: 9px; padding: 12px 14px; margin-top: 12px; font-size: 13.5px;">
+          <div style="font-weight: 700; color: var(--ok); margin-bottom: 4px;">✅ 维修处理结论：</div>
+          <div>${escapeHtml(t.result)}</div>
+          ${t.finishPhotos && t.finishPhotos.length > 0 ? `<div class="photos-grid" style="margin-top: 8px;">${t.finishPhotos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div>` : ''}
         </div>`
       : '';
 
     const ratingHtml = t.rating
-      ? `<div style="background: var(--warn-light); border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: 13.5px;">
-          <strong style="color: #b45309;">验收评分：</strong>${'⭐'.repeat(t.rating.score || 5)} (${t.rating.score}星)
-          <div style="margin-top: 3px; color: #475569;">评价反馈：${escapeHtml(t.rating.comment || '满意')}</div>
+      ? `<div style="background: var(--warn-light); border: 1px solid var(--warn); border-radius: 9px; padding: 12px 14px; margin-top: 12px; font-size: 13.5px;">
+          <div style="font-weight: 700; color: var(--warn); margin-bottom: 4px;">⭐ 验收评价与评分：</div>
+          <div>${'⭐'.repeat(t.rating.score || 5)} (${t.rating.score}星)</div>
+          <div style="margin-top: 4px; color: var(--text-muted);">反馈内容：${escapeHtml(t.rating.comment || '服务满意，已修好')}</div>
         </div>`
       : '';
 
-    const timelineHtml = `
-      <div style="margin-top: 14px; font-size: 13px;">
-        <strong>工单跟踪动态：</strong>
-        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 6px; border-left: 2px solid var(--border); padding-left: 10px; margin-left: 4px;">
-          ${(t.timeline || []).map((tl) => `
-            <div>
-              <div style="font-weight: 600; color: #334155;">${escapeHtml(tl.action)} <span style="font-weight: normal; font-size: 11.5px; color: var(--text-muted);">(${escapeHtml(tl.by)} · ${formatShortTime(tl.t)})</span></div>
-              ${tl.note ? `<div style="color: var(--text-muted); font-size: 12px;">${escapeHtml(tl.note)}</div>` : ''}
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
+    const stepperHtml = renderStepperTimeline(t);
 
     const commentsHtml = `
-      <div style="background: #f8fafc; border-radius: 9px; padding: 10px; margin-top: 14px; border: 1px solid var(--border);">
-        <div style="font-weight: 600; font-size: 13.5px; margin-bottom: 8px;">💬 现场留言与沟通 (${(t.comments || []).length})</div>
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          ${(t.comments || []).length === 0 ? `<div class="text-muted" style="font-size: 12px;">暂无留言，您可输入文字与师傅/总务处沟通</div>` : (t.comments || []).map((c) => `
-            <div style="border-bottom: 1px dashed var(--border); padding-bottom: 4px;">
-              <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);">
+      <div style="background: var(--card-alt); border-radius: 9px; padding: 12px; margin-top: 14px; border: 1px solid var(--border);">
+        <div style="font-weight: 700; font-size: 13.5px; margin-bottom: 8px; color: var(--text);">💬 现场三方留言沟通板 (${(t.comments || []).length})</div>
+        <div style="display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto;">
+          ${(t.comments || []).length === 0 ? `<div class="text-muted" style="font-size: 12px;">暂无留言，您可输入文字与师傅/总务处留言互动</div>` : (t.comments || []).map((c) => `
+            <div style="border-bottom: 1px dashed var(--border); padding-bottom: 6px;">
+              <div style="display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-muted);">
                 <span><strong>${escapeHtml(c.senderName)}</strong> (${escapeHtml(c.senderRole === 'admin' ? '总务处' : c.senderRole === 'worker' ? '维修师傅' : '报修人')})</span>
                 <span>${formatShortTime(c.createdAt)}</span>
               </div>
-              <div style="font-size: 13px; color: #1e293b; margin-top: 2px;">${escapeHtml(c.content)}</div>
+              <div style="font-size: 13px; color: var(--text); margin-top: 3px;">${escapeHtml(c.content)}</div>
             </div>
           `).join('')}
         </div>
         <div style="display: flex; gap: 6px; margin-top: 10px;">
-          <input type="text" id="dlgCommentInput" placeholder="留言沟通现场情况...">
-          <button class="btn btn-sm" id="dlgSendCommentBtn" style="flex: none; width: 65px;">发送</button>
+          <input type="text" id="dlgCommentInput" placeholder="留言沟通上门时间或配件问题...">
+          <button class="btn btn-sm" id="dlgSendCommentBtn" style="flex: none; width: 70px;">发送</button>
         </div>
       </div>
     `;
 
     openModal(`
       <div class="modal-header">
-        <h3>工单详情 ${escapeHtml(t.id)}</h3>
+        <h3>工单详情 #${escapeHtml(t.id)}</h3>
         <button class="modal-close-btn" onclick="window.closeModal()">×</button>
       </div>
       ${timeoutAlert}
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-        <div><span class="badge ${st.cls}">${st.label}</span> <strong style="font-size: 16px; margin-left: 4px;">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong></div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div>
+          <span class="badge ${st.cls}">${st.label}</span>
+          <strong style="font-size: 16.5px; margin-left: 6px;">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong>
+        </div>
       </div>
-      <div style="background: #f8fafc; border-radius: 9px; padding: 10px; font-size: 13.5px; line-height: 1.7;">
+      <div style="background: var(--card-alt); border: 1px solid var(--border); border-radius: 9px; padding: 12px; font-size: 13.5px; line-height: 1.8;">
         <div><strong>报修类别：</strong>${escapeHtml(t.category)} | <strong>紧急程度：</strong>${escapeHtml(t.urgency)}</div>
-        <div><strong>报修人：</strong>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)}) 📱 ${escapeHtml(t.phone)}</div>
+        <div><strong>报修人员：</strong>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)}) 📱 ${escapeHtml(t.phone)}</div>
         <div><strong>报修时间：</strong>${formatTime(t.createdAt)}</div>
-        ${t.assignee ? `<div><strong>维修师傅：</strong>${escapeHtml(t.assignee)}</div>` : ''}
-        <div style="margin-top: 4px;"><strong>故障描述：</strong>${escapeHtml(t.desc)}</div>
+        ${t.assignee ? `<div><strong>责任师傅：</strong><span style="color: var(--brand); font-weight: 700;">${escapeHtml(t.assignee)}</span></div>` : ''}
+        <div style="margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px;">
+          <strong>故障现象：</strong>${escapeHtml(t.desc)}
+        </div>
         ${photosHtml}
       </div>
       ${finishHtml}
       ${ratingHtml}
-      ${timelineHtml}
+      ${stepperHtml}
       ${commentsHtml}
     `);
 
@@ -497,7 +654,7 @@ window.openDetail = async (id) => {
 };
 
 window.remindTicket = async (id) => {
-  const note = prompt('请输入催单原因（例如：影响现场自习、急需使用等）：', '急需使用，请尽快处理！');
+  const note = prompt('请输入催单原因（例如：影响现场教学自习、急需使用等）：', '急需使用，请尽快处理！');
   if (note === null) return;
   try {
     await request(`/api/tickets/${id}/remind`, {
@@ -532,7 +689,7 @@ window.openRate = (id) => {
       <label>评价与建议反馈</label>
       <textarea id="rateCommentText" placeholder="师傅处理及时，技术好，现场收拾得很干净..."></textarea>
     </div>
-    <button class="btn btn-ok" id="btnRateSubmit">提交评价并结单</button>
+    <button class="btn btn-ok" id="btnRateSubmit">⚡ 提交评价并结单</button>
   `);
 
   document.getElementById('rateScoreGroup').onclick = (e) => {
@@ -550,7 +707,7 @@ window.openRate = (id) => {
         method: 'POST',
         body: { score: curScore, comment },
       });
-      toast('🎉 感谢您的评价，工单已结单！');
+      toast('🎉 感谢您的评价，工单已正式结单！');
       closeModal();
       loadMyTickets();
     } catch (err) {
