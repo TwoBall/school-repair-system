@@ -104,12 +104,16 @@ export function openModal(htmlContent) {
   }
   box.innerHTML = `
     <div class="modal-overlay" id="activeModalOverlay">
-      <div class="modal-content" onclick="event.stopPropagation()">
+      <div class="modal-content">
         ${htmlContent}
       </div>
     </div>
   `;
-  document.getElementById('activeModalOverlay').onclick = closeModal;
+  // 只在点到遮罩空白处时关闭。不能给 .modal-content 挂 stopPropagation——
+  // 会掐断冒泡到 document 的委托监听，弹窗内所有 data-act 按钮都会失灵。
+  document.getElementById('activeModalOverlay').onclick = (ev) => {
+    if (ev.target === ev.currentTarget) closeModal();
+  };
 }
 
 export function closeModal() {
@@ -146,7 +150,10 @@ export async function withLoading(btn, loadingText, task) {
 /* ---------------- 自定义对话弹窗 ---------------- */
 
 function bindDialogEvents(overlay, finish) {
-  overlay.onclick = () => finish(false);
+  // 与 openModal 同理：只在点遮罩空白处取消，弹窗内部点击正常冒泡给委托
+  overlay.onclick = (ev) => {
+    if (ev.target === ev.currentTarget) finish(false);
+  };
   overlay.querySelectorAll('[data-act]').forEach((el) => {
     el.onclick = (ev) => {
       ev.stopPropagation();
