@@ -3,11 +3,66 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#1e40af">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="description" content="学校总务报修系统 · 师生在线报修专区，免注册提交报修单，实时查看维修进度。">
   <title>师生报修服务专区 - 学校总务报修系统</title>
+  <script>
+    /* 提前应用主题，避免首屏闪白/闪黑 */
+    (function () {
+      try {
+        var t = localStorage.getItem('bx_theme');
+        if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', t);
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.setAttribute('content', t === 'dark' ? '#0e1116' : '#ffffff');
+      } catch (e) {}
+    })();
+  </script>
+  <style>
+    /* 首屏骨架的关键样式：在 style.css 加载前独立生效，消除白屏 */
+    .boot-view { --boot-bg: #f4f6f9; --boot-card: #fff; --boot-bd: #e6e9ef; --boot-sh: #e9edf2; }
+    html[data-theme="dark"] .boot-view { --boot-bg: #0e1116; --boot-card: #161a21; --boot-bd: #262c38; --boot-sh: #21262f; }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) .boot-view { --boot-bg: #0e1116; --boot-card: #161a21; --boot-bd: #262c38; --boot-sh: #21262f; }
+    }
+    .boot-view { min-height: 100vh; background: var(--boot-bg); }
+    .boot-topbar { height: 58px; border-bottom: 1px solid var(--boot-bd); background: var(--boot-card); }
+    .boot-wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+    .boot-card { background: var(--boot-card); border: 1px solid var(--boot-bd); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
+    .boot-line { height: 12px; border-radius: 6px; margin-bottom: 10px; }
+    .boot-line:last-child { margin-bottom: 0; }
+    .boot-line.w1 { width: 34%; }
+    .boot-line.w2 { width: 62%; }
+    .boot-line.w3 { width: 88%; }
+    .boot-line.w4 { width: 46%; }
+    .boot-line.t { height: 16px; width: 40%; margin-bottom: 14px; }
+    .boot-line.sh { background: linear-gradient(90deg, var(--boot-sh) 25%, var(--boot-bd) 37%, var(--boot-sh) 63%); background-size: 400% 100%; animation: bootShimmer 1.4s ease infinite; }
+    @keyframes bootShimmer { from { background-position: 100% 50%; } to { background-position: 0 50%; } }
+    @media (prefers-reduced-motion: reduce) { .boot-line.sh { animation: none; } }
+  </style>
 </head>
 <body>
-  <div id="app"></div>
+  <div id="app">
+    <div class="boot-view" aria-busy="true" aria-label="页面加载中">
+      <div class="boot-topbar"></div>
+      <div class="boot-wrap">
+        <div class="boot-card">
+          <div class="boot-line t sh"></div>
+          <div class="boot-line w3 sh"></div>
+          <div class="boot-line w2 sh"></div>
+        </div>
+        <div class="boot-card">
+          <div class="boot-line w1 sh"></div>
+          <div class="boot-line w3 sh"></div>
+          <div class="boot-line w4 sh"></div>
+        </div>
+        <div class="boot-card">
+          <div class="boot-line w2 sh"></div>
+          <div class="boot-line w3 sh"></div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="modalContainer"></div>
   <div id="toastContainer"></div>
   <script type="module" src="/src/reporter/main.js"></script>

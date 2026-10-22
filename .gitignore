@@ -12,3 +12,7 @@ uploads/*
 .env
 .DS_Store
 *.log
+
+# 助手工作数据（记忆日志、会话缓存等），不纳入版本管理
+.workbuddy/
+.tmp-smoke/

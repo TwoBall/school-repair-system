@@ -1,16 +1,23 @@
 /**
  * 总务处调度管理中心 - 前端主逻辑
+ * UI 层：design system (style.css) + 内联 SVG 图标 (icons.js)
  */
 import '../common/style.css';
 import { request, STATUS_MAP } from '../common/api.js';
-import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, exportToCsv } from '../common/utils.js';
+import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, exportToCsv, confirmDialog, promptDialog, runAction, delegateActions, createPoller, relTimeFrom, bindChipRadioGroup } from '../common/utils.js';
 import { generateQrImage } from '../common/qrcode.js';
+import { icon, categoryIcon, themeToggleBtn, bindThemeToggle } from '../common/icons.js';
 
 let adminToken = localStorage.getItem('bx_admin_token') || '';
 let currentTab = 'pool'; // 'pool' | 'dash' | 'manage' | 'qrcode'
 let subManageTab = 'workers'; // 'workers' | 'buildings' | 'categories' | 'settings'
 
 let allTickets = [];
+// #11 轮询自动刷新：已见过的工单 id（用于识别新增）
+const seenTicketIds = new Set();
+let poolPoller = null;
+let labelTimer = null;
+let lastPoolRefresh = 0;
 let appConfig = { buildings: [], categories: [], workers: [], sla: {} };
 let filterState = {
   status: 'all',
@@ -37,87 +44,98 @@ async function loadConfig() {
   }
 }
 
+// ----------------- 登录 -----------------
 function renderLoginView() {
   document.getElementById('app').innerHTML = `
     <header class="topbar">
       <div class="nav-wrap">
         <div class="brand">
-          <span style="font-size: 20px;">🏢</span>
-          <div class="title">学校总务报修 - 调度管理中心</div>
+          <span class="logo-mark">${icon('school', 19)}</span>
+          <div class="titles">
+            <div class="title">总务处调度管理中心</div>
+            <div class="subtitle">学校总务报修系统</div>
+          </div>
         </div>
-        <div class="portal-tag">总务管理端</div>
+        <div class="topbar-actions">
+          ${themeToggleBtn()}
+        </div>
       </div>
     </header>
 
-    <main class="app-container" style="max-width: 440px; margin-top: 36px;">
-      <div class="card">
-        <div class="card-title">
-          <span>🔐 总务处管理员登录</span>
+    <main class="app-container narrow">
+      <div class="card mt-20">
+        <div class="card-head">
+          <div class="card-title">${icon('lock', 16)}管理员登录</div>
+          <span class="card-sub">总务处专用</span>
         </div>
-        <div class="form-group">
-          <label>总务管理员口令 / 密码</label>
-          <input type="password" id="adminKeyInput" placeholder="默认初始口令 admin888" autocomplete="current-password">
+        <div class="field">
+          <label class="label" for="adminKeyInput">总务管理员口令</label>
+          <input class="control" type="password" id="adminKeyInput" placeholder="请输入管理口令" autocomplete="current-password">
         </div>
-        <button class="btn" id="btnAdminLogin" style="margin-top: 8px;">登 录 总 务 中 心</button>
+        <button class="btn btn-primary btn-block btn-lg mt-12" id="btnAdminLogin" type="button">${icon('dashboard', 17)}进入调度中心</button>
+        <div class="hint center mt-12">${icon('info', 13)}忘记口令请联系系统维护人员重置</div>
       </div>
     </main>
   `;
 
-  document.getElementById('btnAdminLogin').onclick = async () => {
+  bindThemeToggle();
+
+  const submit = async () => {
     const key = document.getElementById('adminKeyInput').value.trim();
     if (!key) {
       toast('请输入管理口令');
       return;
     }
-    try {
-      const res = await request('/api/auth/login', {
-        method: 'POST',
-        body: { role: 'admin', key },
-      });
+    const btn = document.getElementById('btnAdminLogin');
+    await runAction(btn, '正在验证…', async () => {
+      const res = await request('/api/auth/login', { method: 'POST', body: { role: 'admin', key } });
       adminToken = res.token;
       localStorage.setItem('bx_admin_token', res.token);
       toast('验证成功，进入总务调度中心');
       await loadConfig();
       renderAdminView();
-    } catch (err) {
-      toast(err.message || '口令错误');
-    }
+    });
   };
+
+  document.getElementById('btnAdminLogin').onclick = submit;
+  document.getElementById('adminKeyInput').onkeydown = (e) => { if (e.key === 'Enter') submit(); };
 }
 
+// ----------------- 后台骨架 -----------------
 function renderAdminView() {
+  const schoolName = escapeHtml(appConfig.schoolName || '总务处');
   document.getElementById('app').innerHTML = `
     <header class="topbar">
       <div class="nav-wrap">
         <div class="brand">
-          <span style="font-size: 20px;">🏢</span>
-          <div class="title">${escapeHtml(appConfig.schoolName || '总务处')} · 调度管理中心</div>
+          <span class="logo-mark">${icon('school', 19)}</span>
+          <div class="titles">
+            <div class="title">${schoolName} · 调度管理中心</div>
+            <div class="subtitle">工单派单 · 数据看板 · 基础配置</div>
+          </div>
         </div>
-        <div class="user-info">
-          <span>管理员已在线</span>
-          <button class="btn btn-sm btn-danger" id="btnLogoutAdmin">退出</button>
+        <div class="topbar-actions">
+          <span class="user-chip hide-sm"><span class="avatar">${icon('user', 14)}</span><span class="name">总务处管理员</span></span>
+          <button class="icon-btn" id="btnLogoutAdmin" type="button" aria-label="退出登录" title="退出登录">${icon('logout', 18)}</button>
+          ${themeToggleBtn()}
         </div>
       </div>
     </header>
 
     <main class="app-container wide" id="adminMainContainer"></main>
 
-    <nav class="tabbar">
-      <button class="tabbar-item active" id="tabPoolBtn">
-        <span class="icon">📑</span>
-        <span>工单大池</span>
+    <nav class="tabbar" aria-label="后台导航">
+      <button class="tabbar-item active" id="tabPoolBtn" type="button">
+        ${icon('clipboard', 21)}<span>工单大池</span>
       </button>
-      <button class="tabbar-item" id="tabDashBtn">
-        <span class="icon">📊</span>
-        <span>数据看板</span>
+      <button class="tabbar-item" id="tabDashBtn" type="button">
+        ${icon('chart', 21)}<span>数据看板</span>
       </button>
-      <button class="tabbar-item" id="tabManageBtn">
-        <span class="icon">⚙️</span>
-        <span>基础配置</span>
+      <button class="tabbar-item" id="tabManageBtn" type="button">
+        ${icon('sliders', 21)}<span>基础配置</span>
       </button>
-      <button class="tabbar-item" id="tabQrcodeBtn">
-        <span class="icon">📱</span>
-        <span>报修码</span>
+      <button class="tabbar-item" id="tabQrcodeBtn" type="button">
+        ${icon('qr', 21)}<span>报修码</span>
       </button>
     </nav>
   `;
@@ -127,24 +145,27 @@ function renderAdminView() {
   document.getElementById('tabManageBtn').onclick = () => switchTab('manage');
   document.getElementById('tabQrcodeBtn').onclick = () => switchTab('qrcode');
   document.getElementById('btnLogoutAdmin').onclick = logout;
+  bindThemeToggle();
 
   switchTab('pool');
 }
 
 function switchTab(tab) {
   currentTab = tab;
-  document.getElementById('tabPoolBtn').classList.toggle('active', tab === 'pool');
-  document.getElementById('tabDashBtn').classList.toggle('active', tab === 'dash');
-  document.getElementById('tabManageBtn').classList.toggle('active', tab === 'manage');
-  document.getElementById('tabQrcodeBtn').classList.toggle('active', tab === 'qrcode');
+  const map = { pool: 'tabPoolBtn', dash: 'tabDashBtn', manage: 'tabManageBtn', qrcode: 'tabQrcodeBtn' };
+  Object.entries(map).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('active', tab === key);
+  });
 
   const container = document.getElementById('adminMainContainer');
   if (tab === 'pool') {
     container.innerHTML = renderPoolView();
     bindPoolEvents();
     loadPoolTickets();
+    startPoolPoller();
   } else if (tab === 'dash') {
-    container.innerHTML = `<div class="card text-muted" style="text-align: center; padding: 40px;">正在汇总统计数据...</div>`;
+    container.innerHTML = skeletonRows(3);
     loadDashboard();
   } else if (tab === 'manage') {
     container.innerHTML = renderManageView();
@@ -155,77 +176,164 @@ function switchTab(tab) {
   }
 }
 
+function skeletonRows(n) {
+  return Array.from({ length: n }, () => '<div class="skeleton sk-block"></div>').join('');
+}
+
+function emptyBlock(iconName, title, desc) {
+  return `<div class="card"><div class="empty">
+    <div class="empty-icon">${icon(iconName, 22)}</div>
+    <div class="empty-title">${escapeHtml(title)}</div>
+    <div class="empty-desc">${escapeHtml(desc)}</div>
+  </div></div>`;
+}
+
+/** 带「重新加载」的错误空态，用于首屏加载失败后给回退路径 */
+function loadErrorBlock(err) {
+  const title = err && err.retryable ? '网络异常，加载失败' : '加载失败';
+  return `<div class="card"><div class="empty">
+    <div class="empty-icon">${icon('alert', 22)}</div>
+    <div class="empty-title">${escapeHtml(title)}</div>
+    <div class="empty-desc">${escapeHtml(err && err.message ? err.message : '未知错误')}</div>
+    <button class="btn btn-primary mt-16" type="button" id="btnBlockRetry">${icon('refresh', 14)}重新加载</button>
+  </div></div>`;
+}
+
+/** 渲染错误空态并绑定重试按钮 */
+function renderLoadError(container, err, retry) {
+  if (!container) return;
+  container.innerHTML = loadErrorBlock(err);
+  const btn = document.getElementById('btnBlockRetry');
+  if (btn) btn.onclick = retry;
+}
+
 // ----------------- 1. 工单调度大池 -----------------
 function renderPoolView() {
   const bldgOptions = `<option value="all">全部楼栋</option>` + appConfig.buildings.map((b) => `<option value="${escapeHtml(b)}" ${filterState.building === b ? 'selected' : ''}>${escapeHtml(b)}</option>`).join('');
   const catOptions = `<option value="all">全部分类</option>` + appConfig.categories.map((c) => `<option value="${escapeHtml(c)}" ${filterState.category === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('');
 
   return `
-    <div class="card">
-      <div class="card-title">
-        <span>📑 工单调度管理大池</span>
-        <button class="btn btn-sm btn-ghost" id="btnExportCsv">📥 导出 Excel/CSV 报表</button>
+    <section class="card">
+      <div class="card-head wrap">
+        <div class="card-title">${icon('clipboard', 16)}工单调度大池</div>
+        <button class="btn btn-sm btn-outline" id="btnExportCsv" type="button">${icon('download', 14)}导出 CSV 报表</button>
       </div>
 
-      <div class="grid-form" style="margin-bottom: 10px;">
-        <input type="text" id="poolSearchInput" placeholder="输入单号/房间/描述/报修人/师傅姓名..." value="${escapeHtml(filterState.search)}">
-        <div style="display: flex; gap: 8px;">
-          <select id="poolBldgSelect">${bldgOptions}</select>
-          <select id="poolCatSelect">${catOptions}</select>
-          <button class="btn btn-sm" id="btnFilterSearch" style="flex: none; width: 75px;">筛选</button>
+      <div class="grid-form">
+        <div class="field">
+          <label class="label" for="poolSearchInput">关键词搜索</label>
+          <input class="control" type="text" id="poolSearchInput" placeholder="单号 / 房间 / 描述 / 报修人 / 师傅" value="${escapeHtml(filterState.search)}">
+        </div>
+        <div class="field">
+          <label class="label" for="poolBldgSelect">楼栋筛选</label>
+          <div class="select-wrap"><select class="control" id="poolBldgSelect">${bldgOptions}</select></div>
+        </div>
+        <div class="field">
+          <label class="label" for="poolCatSelect">分类筛选</label>
+          <div class="select-wrap"><select class="control" id="poolCatSelect">${catOptions}</select></div>
         </div>
       </div>
 
-      <div class="chips-group" id="poolStatusChips">
+      <div class="chips-group mt-8" id="poolStatusChips">
         <span class="chip ${filterState.status === 'all' && !filterState.timeoutOnly ? 'active' : ''}" data-st="all">全部</span>
         <span class="chip ${filterState.status === 'pending' ? 'active' : ''}" data-st="pending">待受理</span>
         <span class="chip ${filterState.status === 'assigned' ? 'active' : ''}" data-st="assigned">已派工</span>
         <span class="chip ${filterState.status === 'working' ? 'active' : ''}" data-st="working">维修中</span>
         <span class="chip ${filterState.status === 'done' ? 'active' : ''}" data-st="done">待验收</span>
         <span class="chip ${filterState.status === 'closed' ? 'active' : ''}" data-st="closed">已结单</span>
-        <span class="chip danger ${filterState.timeoutOnly ? 'active' : ''}" data-st="timeout">⚠️ 超时预警工单</span>
+        <span class="chip danger ${filterState.timeoutOnly ? 'active' : ''}" data-st="timeout">${icon('alert', 14)}超时预警</span>
       </div>
-    </div>
+    </section>
 
-    <div id="poolListContainer">
-      <div class="card text-muted" style="text-align: center; padding: 40px;">正在加载工单大池...</div>
-    </div>
+    <div id="poolListContainer">${skeletonRows(3)}</div>
   `;
 }
 
 function bindPoolEvents() {
-  document.getElementById('poolStatusChips').onclick = (e) => {
-    const chip = e.target.closest('.chip');
-    if (!chip) return;
-    const st = chip.dataset.st;
-    if (st === 'timeout') {
-      filterState.timeoutOnly = true;
-      filterState.status = 'all';
-    } else {
-      filterState.timeoutOnly = false;
-      filterState.status = st;
-    }
-    document.querySelectorAll('#poolStatusChips .chip').forEach((c) => c.classList.remove('active'));
-    chip.classList.add('active');
-    loadPoolTickets();
-  };
+  bindChipRadioGroup(document.getElementById('poolStatusChips'), {
+    valueKey: 'st',
+    label: '工单状态筛选',
+    onChange: (st) => {
+      if (st === 'timeout') {
+        filterState.timeoutOnly = true;
+        filterState.status = 'all';
+      } else {
+        filterState.timeoutOnly = false;
+        filterState.status = st;
+      }
+      loadPoolTickets();
+    },
+  });
 
-  document.getElementById('btnFilterSearch').onclick = () => {
+  const search = () => {
     filterState.search = document.getElementById('poolSearchInput').value.trim();
     filterState.building = document.getElementById('poolBldgSelect').value;
     filterState.category = document.getElementById('poolCatSelect').value;
     loadPoolTickets();
   };
 
-  document.getElementById('btnExportCsv').onclick = handleExportCsv;
+  const btn = document.getElementById('btnFilterSearch');
+  if (btn) btn.onclick = search;
+  const input = document.getElementById('poolSearchInput');
+  if (input) input.onkeydown = (e) => { if (e.key === 'Enter') search(); };
+  ['poolBldgSelect', 'poolCatSelect'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.onchange = search;
+  });
+
+  const exportBtn = document.getElementById('btnExportCsv');
+  if (exportBtn) exportBtn.onclick = handleExportCsv;
 }
 
-async function loadPoolTickets() {
+/** 记录本次工单 id，返回首见的 id 集合（silent 模式下才用于高亮） */
+function diffNewIds(list) {
+  const fresh = new Set(list.filter((t) => !seenTicketIds.has(t.id)).map((t) => t.id));
+  list.forEach((t) => seenTicketIds.add(t.id));
+  if (seenTicketIds.size > 800) {
+    seenTicketIds.clear();
+    list.forEach((t) => seenTicketIds.add(t.id));
+  }
+  return fresh;
+}
+
+/** 表格底部：统计 + 自动刷新状态条 */
+function poolFootHtml(list, timeoutCount) {
+  return `
+    <div class="tbl-foot">
+      <span>共 ${list.length} 条工单${timeoutCount > 0 ? `，其中超时 ${timeoutCount} 条` : ''}</span>
+      <span class="poll-bar">
+        <span class="poll-dot" aria-hidden="true"></span>
+        <span id="poolPollLabel">${relTimeFrom(lastPoolRefresh)}</span>
+        <button class="poll-refresh" type="button" id="btnPoolRefresh">${icon('refresh', 12)}立即刷新</button>
+      </span>
+    </div>`;
+}
+
+function updatePollLabel() {
+  const el = document.getElementById('poolPollLabel');
+  if (el) el.textContent = relTimeFrom(lastPoolRefresh);
+}
+
+/** 启动大池轮询（仅在"调度大池"标签页生效） */
+function startPoolPoller() {
+  if (poolPoller) return;
+  poolPoller = createPoller(async () => {
+    if (currentTab !== 'pool') return false; // 不在该页：跳过本轮
+    if (document.querySelector('.modal-overlay')) return false; // 正在操作弹窗：不打断
+    if (!document.getElementById('poolListContainer')) return false;
+    await loadPoolTickets({ silent: true });
+    return true;
+  }, 30000, () => updatePollLabel());
+
+  if (!labelTimer) labelTimer = setInterval(updatePollLabel, 30000);
+}
+
+async function loadPoolTickets({ silent = false } = {}) {
   const container = document.getElementById('poolListContainer');
   if (!container) return;
-  container.innerHTML = `<div class="card text-muted" style="text-align: center; padding: 36px 12px;">加载中...</div>`;
+  if (!silent) container.innerHTML = skeletonRows(3);
 
-  let q = `/api/tickets?`;
+  let q = '/api/tickets?';
   if (filterState.status !== 'all') q += `&status=${encodeURIComponent(filterState.status)}`;
   if (filterState.building !== 'all') q += `&building=${encodeURIComponent(filterState.building)}`;
   if (filterState.category !== 'all') q += `&category=${encodeURIComponent(filterState.category)}`;
@@ -233,110 +341,145 @@ async function loadPoolTickets() {
 
   try {
     let list = await request(q, { token: adminToken });
-    if (filterState.timeoutOnly) {
-      list = list.filter((t) => t.isTimeout);
-    }
+    if (filterState.timeoutOnly) list = list.filter((t) => t.isTimeout);
+
+    // 静默轮询时算出新增工单用于高亮；首屏加载不上色（否则整屏都在闪）
+    const newIds = diffNewIds(list);
+    if (silent && newIds.size > 0) toast(`新增 ${newIds.size} 条报修工单`);
+
     allTickets = list;
+    lastPoolRefresh = Date.now();
 
     if (list.length === 0) {
-      container.innerHTML = `<div class="card text-muted" style="text-align: center; padding: 40px;">未找到匹配的工单记录</div>`;
+      container.innerHTML = emptyBlock('search', '未找到匹配的工单', '试试调整筛选条件或清空关键词');
       return;
     }
 
-    container.innerHTML = list.map((t) => renderAdminTicketCard(t)).join('');
+    const timeoutCount = list.filter((t) => t.isTimeout).length;
+    const markNew = silent ? newIds : new Set();
+    container.innerHTML = `
+      ${timeoutCount > 0 ? `<div class="alert alert-danger mb-12">${icon('alert', 16)}<div>当前有 <strong>${timeoutCount}</strong> 单已超 SLA 时限，请尽快调度处理。</div></div>` : ''}
+      <div class="tbl-wrap">
+        <div class="tbl-scroll">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>工单号</th>
+                <th>报修位置</th>
+                <th>报修人</th>
+                <th>负责师傅</th>
+                <th>状态</th>
+                <th class="text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>${list.map((t) => renderPoolRow(t, markNew.has(t.id))).join('')}</tbody>
+          </table>
+        </div>
+        ${poolFootHtml(list, timeoutCount)}
+      </div>`;
+
+    const refreshBtn = document.getElementById('btnPoolRefresh');
+    if (refreshBtn) refreshBtn.onclick = () => { updatePollLabel(); loadPoolTickets({ silent: true }); };
   } catch (err) {
     if (err.message && err.message.includes('未授权')) {
       logout();
       return;
     }
-    container.innerHTML = `<div class="card text-muted" style="text-align: center; color: var(--danger);">加载失败: ${escapeHtml(err.message)}</div>`;
+    if (silent) return; // 轮询失败保持原界面，避免整块被错误态覆盖
+    renderLoadError(container, err, () => loadPoolTickets());
   }
 }
 
-function renderAdminTicketCard(t) {
+function renderPoolRow(t, isNew = false) {
   const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
-  const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">⚠️ ${escapeHtml(t.timeoutReason)}</span>` : '';
-  const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">🔔 催单(${t.remindCount})</span>` : '';
+  const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">${icon('alert', 12)}超时</span>` : '';
+  const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">${icon('bell', 12)}催单 ${t.remindCount}</span>` : '';
 
-  let actionsHtml = `<button class="btn btn-sm btn-ghost" onclick="window.openAdminDetail('${escapeHtml(t.id)}')">详情/留言</button> `;
+  let actionsHtml = `<button class="btn btn-sm btn-outline" type="button" data-act="admin-detail" data-id="${escapeHtml(t.id)}">${icon('message', 14)}详情</button>`;
   if (t.status === 'pending' || t.status === 'assigned') {
-    actionsHtml += `<button class="btn btn-sm btn-ok" onclick="window.openAssignModal('${escapeHtml(t.id)}')">指派师傅</button> `;
+    actionsHtml += `<button class="btn btn-sm btn-primary" type="button" data-act="assign" data-id="${escapeHtml(t.id)}">${icon('userCheck', 14)}派单</button>`;
   }
   if (t.status === 'pending') {
-    actionsHtml += `<button class="btn btn-sm btn-danger" onclick="window.rejectTicket('${escapeHtml(t.id)}')">驳回</button> `;
+    actionsHtml += `<button class="btn btn-sm btn-danger" type="button" data-act="reject" data-id="${escapeHtml(t.id)}">${icon('ban', 14)}驳回</button>`;
   }
-  actionsHtml += `<button class="btn btn-sm btn-ghost" onclick="window.printTicket('${escapeHtml(t.id)}')">🖨️ 打印派工单</button>`;
+  actionsHtml += `<button class="btn btn-sm btn-ghost" type="button" data-act="print" data-id="${escapeHtml(t.id)}">${icon('printer', 14)}派工单</button>`;
 
   return `
-    <div class="ticket-card ${t.isTimeout ? 'is-timeout' : ''}">
-      <div class="ticket-head">
-        <span class="ticket-no">${escapeHtml(t.id)}</span>
-        <div style="display: flex; gap: 4px;">
-          ${remindBadge}
-          ${timeoutBadge}
-          <span class="badge ${st.cls}">${st.label}</span>
+    <tr class="${t.isTimeout ? 'is-timeout' : ''}${isNew ? ' is-new' : ''}">
+      <td data-l="工单号"><span class="ticket-no">${escapeHtml(t.id)}</span></td>
+      <td class="cell-primary" data-l="">
+        <div class="cell-title">${icon('mapPin', 14)}<span>${escapeHtml(t.building)} ${escapeHtml(t.room)}</span></div>
+        <div class="cell-sub row gap-6 wrap">
+          <span class="row gap-4">${categoryIcon(t.category, 13)}${escapeHtml(t.category)}</span>
+          <span>·</span>
+          <span class="row gap-4 ${t.urgency === '紧急' ? 'urgent strong' : ''}">${icon('alert', 13)}${escapeHtml(t.urgency)}</span>
+          <span>·</span>
+          <span>${formatShortTime(t.createdAt)}</span>
         </div>
-      </div>
-      <div class="ticket-title">${escapeHtml(t.building)} ${escapeHtml(t.room)}</div>
-      <div class="ticket-meta">
-        <span>类别：${escapeHtml(t.category)}</span> | 
-        <span>紧急度：<strong style="${t.urgency === '紧急' ? 'color: var(--danger);' : ''}">${escapeHtml(t.urgency)}</strong></span> | 
-        <span>报修人：${escapeHtml(t.reporter)} 📱 ${escapeHtml(t.phone)} (${escapeHtml(t.identity)})</span> | 
-        <span>时间：${formatTime(t.createdAt)}</span>
-        ${t.assignee ? ` | <strong style="color: var(--brand);">负责师傅：${escapeHtml(t.assignee)}</strong>` : ''}
-      </div>
-      <div class="ticket-desc">${escapeHtml(t.desc)}</div>
-      <div class="ticket-actions">${actionsHtml}</div>
-    </div>
-  `;
+      </td>
+      <td data-l="报修人">
+        <div>${escapeHtml(t.reporter)}<span class="cell-sub">${escapeHtml(t.identity)}</span></div>
+        <div class="cell-sub mono">${escapeHtml(t.phone)}</div>
+      </td>
+      <td data-l="师傅">${t.assignee ? `<strong>${escapeHtml(t.assignee)}</strong>` : '<span class="subtle">未指派</span>'}</td>
+      <td data-l="状态"><div class="badge-row start">${remindBadge}${timeoutBadge}<span class="badge ${st.cls}">${st.label}</span></div></td>
+      <td data-l="" class="no-label"><div class="tbl-actions">${actionsHtml}</div></td>
+    </tr>`;
 }
 
-window.openAssignModal = (id) => {
-  const options = appConfig.workers.map((w) => `<option value="${escapeHtml(w.name)}">${escapeHtml(w.name)} (${escapeHtml(w.skill)} 📱${escapeHtml(w.phone)})</option>`).join('');
+// ----------------- 派单 / 驳回 / 详情 -----------------
+const openAssignModal = (id) => {
+  const options = appConfig.workers
+    .map((w) => `<option value="${escapeHtml(w.name)}">${escapeHtml(w.name)}｜${escapeHtml(w.skill || '综合维修')}｜${escapeHtml(w.phone)}</option>`)
+    .join('');
 
   openModal(`
     <div class="modal-header">
-      <h3>指派维修师傅</h3>
-      <button class="modal-close-btn" onclick="window.closeModal()">×</button>
+      <h3>${icon('userCheck', 18)}指派维修师傅</h3>
+      <button class="modal-close-btn" type="button" data-act="modal-close" aria-label="关闭">${icon('close', 16)}</button>
     </div>
-    <div class="form-group">
-      <label>选择负责师傅</label>
-      <select id="assignWorkerSelect">${options}</select>
+    <div class="modal-body">
+      <div class="field">
+        <label class="label" for="assignWorkerSelect"><span class="req">*</span>选择负责师傅</label>
+        <div class="select-wrap"><select class="control" id="assignWorkerSelect">${options}</select></div>
+      </div>
+      <div class="field">
+        <label class="label" for="assignNoteInput">派工说明 / 批注</label>
+        <textarea class="control" id="assignNoteInput" placeholder="例如：带上专用工具，请在上午尽快到场排查"></textarea>
+      </div>
     </div>
-    <div class="form-group">
-      <label>派工说明 / 批注</label>
-      <textarea id="assignNoteInput" placeholder="例如：带上专用工具，请在上午尽快到场排查..."></textarea>
+    <div class="modal-footer">
+      <button class="btn btn-outline" type="button" data-act="modal-close">取消</button>
+      <button class="btn btn-primary" id="btnConfirmAssign" type="button">${icon('check', 16)}确认指派</button>
     </div>
-    <button class="btn btn-ok" id="btnConfirmAssign">确认指派并发送通知</button>
   `);
 
   document.getElementById('btnConfirmAssign').onclick = async () => {
     const worker = document.getElementById('assignWorkerSelect').value;
     const note = document.getElementById('assignNoteInput').value.trim();
-    try {
-      await request(`/api/tickets/${id}/assign`, {
-        method: 'POST',
-        token: adminToken,
-        body: { worker, note },
-      });
-      toast(`已成功派工给 ${worker}！`);
+    const btn = document.getElementById('btnConfirmAssign');
+    await runAction(btn, '正在派工…', async () => {
+      await request(`/api/tickets/${id}/assign`, { method: 'POST', token: adminToken, body: { worker, note } });
+      toast(`已派工给 ${worker}`);
       closeModal();
       loadPoolTickets();
-    } catch (err) {
-      toast(err.message);
-    }
+    });
   };
 };
 
-window.rejectTicket = async (id) => {
-  const note = prompt('请输入驳回原因（将展示给报修人）：', '不在维修范围或重复报修');
-  if (note === null) return;
+const rejectTicket = async (id) => {
+  const note = await promptDialog({
+    title: '驳回工单',
+    desc: '驳回原因会同步展示给报修人，请写清原因便于对方理解。',
+    label: '驳回原因',
+    value: '不在维修范围或重复报修',
+    rows: 3,
+    maxlength: 100,
+    iconName: 'close',
+  });
+  if (!note) return;
   try {
-    await request(`/api/tickets/${id}/reject`, {
-      method: 'POST',
-      token: adminToken,
-      body: { note },
-    });
+    await request(`/api/tickets/${id}/reject`, { method: 'POST', token: adminToken, body: { note } });
     toast('已驳回该工单');
     loadPoolTickets();
   } catch (err) {
@@ -344,118 +487,164 @@ window.rejectTicket = async (id) => {
   }
 };
 
-window.openAdminDetail = async (id) => {
+const openAdminDetail = async (id) => {
   try {
     const t = await request(`/api/tickets/${id}`, { token: adminToken });
     const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
 
-    const photosHtml = t.photos && t.photos.length > 0
-      ? `<div style="margin-top: 10px;"><strong>现场报修照片：</strong><div class="photos-grid">${t.photos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div></div>`
+    const timeoutAlert = t.isTimeout
+      ? `<div class="alert alert-danger mb-12">${icon('alert', 16)}<div><strong>超时预警</strong>：${escapeHtml(t.timeoutReason)}</div></div>`
       : '';
 
-    const finishHtml = t.result
-      ? `<div style="background: var(--ok-light); border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: 13.5px;">
-          <strong style="color: var(--ok);">维修结果：</strong>${escapeHtml(t.result)}
-          ${t.finishPhotos && t.finishPhotos.length > 0 ? `<div class="photos-grid" style="margin-top: 6px;">${t.finishPhotos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div>` : ''}
+    const photosHtml = t.photos && t.photos.length > 0
+      ? `<div class="mt-12">
+          <div class="label">现场报修照片</div>
+          <div class="photos-grid">${t.photos.map((p, i) => `<div class="photo-item"><img src="${escapeHtml(p)}" alt="现场照片 ${i + 1}" data-act="view-photo" data-src="${escapeHtml(p)}" role="button" tabindex="0"></div>`).join('')}</div>
         </div>`
       : '';
 
+    const finishHtml = t.result
+      ? `<div class="alert alert-ok mt-12 col gap-4 start">
+          ${icon('checkCircle', 16)}
+          <div>
+            <strong>维修结果</strong>
+            <div class="mt-4">${escapeHtml(t.result)}</div>
+            ${t.finishPhotos && t.finishPhotos.length > 0 ? `<div class="photos-grid">${t.finishPhotos.map((p, i) => `<div class="photo-item"><img src="${escapeHtml(p)}" alt="完工照片 ${i + 1}" data-act="view-photo" data-src="${escapeHtml(p)}" role="button" tabindex="0"></div>`).join('')}</div>` : ''}
+          </div>
+        </div>`
+      : '';
+
+    const ratingHtml = t.rating
+      ? `<div class="alert alert-warn mt-12 col gap-4 start">
+          ${icon('star', 16)}
+          <div><strong>用户评分</strong> ${t.rating.score} 星
+            <div class="mt-4">${escapeHtml(t.rating.comment || '未填写评价')}</div>
+          </div>
+        </div>`
+      : '';
+
+    const timelineHtml = `
+      <div class="mt-16">
+        <div class="card-title mb-8 fs-14">${icon('history', 16)}流转轨迹</div>
+        <div class="timeline">
+          ${(t.timeline || []).map((tl) => `
+            <div class="tl-item">
+              <div class="tl-action">${escapeHtml(tl.action)}<span class="tl-meta">${escapeHtml(tl.by)} · ${formatShortTime(tl.t)}</span></div>
+              ${tl.note ? `<div class="tl-note">${escapeHtml(tl.note)}</div>` : ''}
+            </div>`).join('')}
+        </div>
+      </div>`;
+
+    const roleLabel = (r) => (r === 'admin' ? '总务处' : r === 'worker' ? '维修师傅' : '报修人');
+    const commentsHtml = `
+      <div class="thread mt-12">
+        <div class="thread-head">${icon('message', 16)}各方沟通留言 <span class="badge b-plain">${(t.comments || []).length}</span></div>
+        <div class="thread-list">
+          ${(t.comments || []).length === 0
+            ? `<div class="subtle fs-13">暂无留言</div>`
+            : (t.comments || []).map((c) => `
+              <div class="thread-item">
+                <div class="thread-meta">
+                  <span><strong>${escapeHtml(c.senderName)}</strong> · ${roleLabel(c.senderRole)}</span>
+                  <span>${formatShortTime(c.createdAt)}</span>
+                </div>
+                <div class="thread-body">${escapeHtml(c.content)}</div>
+              </div>`).join('')}
+        </div>
+        <div class="composer">
+          <input class="control" type="text" id="dlgCommentInput" aria-label="留言内容" placeholder="输入总务处指导意见...">
+          <button class="btn btn-primary shrink-0" id="dlgSendCommentBtn" type="button">${icon('send', 16)}</button>
+        </div>
+      </div>`;
+
     openModal(`
       <div class="modal-header">
-        <h3>工单详细档案 ${escapeHtml(t.id)}</h3>
-        <button class="modal-close-btn" onclick="window.closeModal()">×</button>
+        <h3>${icon('receipt', 18)}工单档案<span class="subtle fs-13 mono">${escapeHtml(t.id)}</span></h3>
+        <button class="modal-close-btn" type="button" data-act="modal-close" aria-label="关闭">${icon('close', 16)}</button>
       </div>
-      <div style="background: #f8fafc; border-radius: 9px; padding: 10px; font-size: 13.5px; line-height: 1.7;">
-        <div><span class="badge ${st.cls}">${st.label}</span> <strong style="font-size: 16px; margin-left: 4px;">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong></div>
-        <div><strong>故障分类：</strong>${escapeHtml(t.category)} | <strong>紧急度：</strong>${escapeHtml(t.urgency)}</div>
-        <div><strong>报修人：</strong>${escapeHtml(t.reporter)} 📱 ${escapeHtml(t.phone)} (${escapeHtml(t.identity)})</div>
-        <div><strong>负责师傅：</strong>${escapeHtml(t.assignee || '未指派')}</div>
-        <div><strong>提交时间：</strong>${formatTime(t.createdAt)}</div>
-        <div style="margin-top: 4px;"><strong>故障描述：</strong>${escapeHtml(t.desc)}</div>
-        ${photosHtml}
-      </div>
-      ${finishHtml}
-      <div style="background: #f8fafc; border-radius: 9px; padding: 10px; margin-top: 14px; border: 1px solid var(--border);">
-        <div style="font-weight: 600; font-size: 13.5px; margin-bottom: 8px;">💬 现场各方沟通留言 (${(t.comments || []).length})</div>
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          ${(t.comments || []).length === 0 ? `<div class="text-muted" style="font-size: 12px;">暂无留言</div>` : (t.comments || []).map((c) => `
-            <div style="border-bottom: 1px dashed var(--border); padding-bottom: 4px;">
-              <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);">
-                <span><strong>${escapeHtml(c.senderName)}</strong> (${escapeHtml(c.senderRole === 'admin' ? '总务处' : c.senderRole === 'worker' ? '维修师傅' : '报修人')})</span>
-                <span>${formatShortTime(c.createdAt)}</span>
-              </div>
-              <div style="font-size: 13px; color: #1e293b; margin-top: 2px;">${escapeHtml(c.content)}</div>
-            </div>
-          `).join('')}
+      <div class="modal-body">
+        ${timeoutAlert}
+        <div class="row gap-8 wrap mb-12">
+          <span class="badge ${st.cls}">${st.label}</span>
+          <strong class="fs-16">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong>
         </div>
-        <div style="display: flex; gap: 6px; margin-top: 10px;">
-          <input type="text" id="dlgCommentInput" placeholder="输入总务处指导意见...">
-          <button class="btn btn-sm" id="dlgSendCommentBtn" style="flex: none; width: 65px;">发送</button>
+        <div class="soft-block">
+          <div class="info-list">
+            <div class="info-row"><span class="k">故障分类</span><span class="v">${categoryIcon(t.category, 14)}${escapeHtml(t.category)}｜紧急度 <strong>${escapeHtml(t.urgency)}</strong></span></div>
+            <div class="info-row"><span class="k">报修人</span><span class="v">${escapeHtml(t.reporter)}（${escapeHtml(t.identity)}）· <span class="mono">${escapeHtml(t.phone)}</span></span></div>
+            <div class="info-row"><span class="k">负责师傅</span><span class="v">${t.assignee ? escapeHtml(t.assignee) : '<span class="subtle">未指派</span>'}</span></div>
+            <div class="info-row"><span class="k">提交时间</span><span class="v">${formatTime(t.createdAt)}</span></div>
+            <div class="info-row"><span class="k">故障描述</span><span class="v">${escapeHtml(t.desc)}</span></div>
+          </div>
+          ${photosHtml}
         </div>
+        ${finishHtml}
+        ${ratingHtml}
+        ${timelineHtml}
+        ${commentsHtml}
       </div>
     `);
 
-    document.getElementById('dlgSendCommentBtn').onclick = async () => {
-      const content = document.getElementById('dlgCommentInput').value.trim();
+    const input = document.getElementById('dlgCommentInput');
+    const btn = document.getElementById('dlgSendCommentBtn');
+    const send = async () => {
+      const content = input.value.trim();
       if (!content) return;
-      try {
+      const run = async () => {
         await request(`/api/tickets/${t.id}/comments`, {
           method: 'POST',
           token: adminToken,
-          body: {
-            senderRole: 'admin',
-            senderName: '总务处管理员',
-            content,
-          },
+          body: { senderRole: 'admin', senderName: '总务处管理员', content },
         });
-        window.openAdminDetail(t.id);
-      } catch (e) {
-        toast(e.message);
-      }
+        openAdminDetail(t.id);
+      };
+      await runAction(btn, '发送中…', run);
     };
+    btn.onclick = send;
+    input.onkeydown = (e) => { if (e.key === 'Enter') send(); };
   } catch (err) {
     toast(err.message);
   }
 };
 
-window.printTicket = async (id) => {
+const printTicket = async (id) => {
   const t = await request(`/api/tickets/${id}`, { token: adminToken });
   const st = STATUS_MAP[t.status] || { label: t.status };
 
   const printDiv = document.createElement('div');
   printDiv.className = 'print-sheet';
   printDiv.innerHTML = `
-    <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 14px;">
-      <h2 style="margin: 0; font-size: 22px;">${escapeHtml(appConfig.schoolName || '学校总务处')} · 设备报修派工单</h2>
-      <div style="font-size: 12px; margin-top: 4px;">工单编号：${escapeHtml(t.id)} | 打印时间：${formatTime(Date.now())}</div>
+    <div class="print-head">
+      <h2>${escapeHtml(appConfig.schoolName || '学校总务处')} · 设备报修派工单</h2>
+      <div class="print-sub">工单编号：${escapeHtml(t.id)} ｜ 打印时间：${formatTime(Date.now())}</div>
     </div>
-    <table style="width: 100%; border-collapse: collapse; font-size: 13.5px;" border="1" cellpadding="8">
+    <table class="print-table">
       <tr>
-        <td style="width: 15%; background: #f2f2f2; font-weight: bold;">报修地点</td><td style="width: 35%;">${escapeHtml(t.building)} ${escapeHtml(t.room)}</td>
-        <td style="width: 15%; background: #f2f2f2; font-weight: bold;">故障类别</td><td style="width: 35%;">${escapeHtml(t.category)} (${escapeHtml(t.urgency)})</td>
+        <th>报修地点</th><td class="cell-wide">${escapeHtml(t.building)} ${escapeHtml(t.room)}</td>
+        <th>故障类别</th><td class="cell-wide">${escapeHtml(t.category)} (${escapeHtml(t.urgency)})</td>
       </tr>
       <tr>
-        <td style="background: #f2f2f2; font-weight: bold;">报修人员</td><td>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)})</td>
-        <td style="background: #f2f2f2; font-weight: bold;">联系电话</td><td>${escapeHtml(t.phone)}</td>
+        <th>报修人员</th><td>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)})</td>
+        <th>联系电话</th><td>${escapeHtml(t.phone)}</td>
       </tr>
       <tr>
-        <td style="background: #f2f2f2; font-weight: bold;">报修时间</td><td>${formatTime(t.createdAt)}</td>
-        <td style="background: #f2f2f2; font-weight: bold;">当前状态</td><td>${st.label}</td>
+        <th>报修时间</th><td>${formatTime(t.createdAt)}</td>
+        <th>当前状态</th><td>${st.label}</td>
       </tr>
       <tr>
-        <td style="background: #f2f2f2; font-weight: bold;">指派师傅</td><td>${escapeHtml(t.assignee || '未指派')}</td>
-        <td style="background: #f2f2f2; font-weight: bold;">完工时间</td><td>${formatTime(t.completedAt)}</td>
+        <th>指派师傅</th><td>${escapeHtml(t.assignee || '未指派')}</td>
+        <th>完工时间</th><td>${formatTime(t.completedAt)}</td>
       </tr>
       <tr>
-        <td style="background: #f2f2f2; font-weight: bold;">故障描述</td>
-        <td colspan="3" style="min-height: 60px;">${escapeHtml(t.desc)}</td>
+        <th>故障描述</th>
+        <td colspan="3" class="tall-60">${escapeHtml(t.desc)}</td>
       </tr>
       <tr>
-        <td style="background: #f2f2f2; font-weight: bold;">维修记录及耗材说明</td>
-        <td colspan="3" style="min-height: 80px;">${escapeHtml(t.result || '现场排查中...')}</td>
+        <th>维修记录及耗材说明</th>
+        <td colspan="3" class="tall-80">${escapeHtml(t.result || '现场排查中...')}</td>
       </tr>
     </table>
-    <div style="display: flex; justify-content: space-between; margin-top: 36px; padding: 0 20px; font-size: 14px;">
+    <div class="print-sign">
       <div>报修人验收签名：________________</div>
       <div>维修师傅签名：________________</div>
       <div>总务处审核盖章：________________</div>
@@ -495,186 +684,217 @@ function handleExportCsv() {
   exportToCsv(`总务报修导出_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
 }
 
-// ----------------- 2. 数据统计大屏 -----------------
+// ----------------- 2. 数据统计看板 -----------------
 async function loadDashboard() {
   const container = document.getElementById('adminMainContainer');
   try {
     const st = await request('/api/stats/dashboard', { token: adminToken });
+    const kpi = (cls, iconName, val, label, clickable) => `
+      <div class="kpi-card ${clickable ? 'clickable' : ''}" ${clickable ? 'id="cardKpiTimeout"' : ''}>
+        <div class="kpi-body">
+          <div class="val">${val}</div>
+          <div class="lbl">${label}</div>
+        </div>
+        <span class="kpi-icon ${cls}">${icon(iconName, 20)}</span>
+      </div>`;
+
     container.innerHTML = `
       <div class="kpi-grid">
-        <div class="kpi-card"><div class="val" style="color: var(--brand);">${st.total}</div><div class="lbl">累计报修总数</div></div>
-        <div class="kpi-card"><div class="val" style="color: var(--warn);">${st.pending + st.assigned + st.working}</div><div class="lbl">在办工单</div></div>
-        <div class="kpi-card"><div class="val" style="color: var(--ok);">${st.finishRate}%</div><div class="lbl">综合办结率</div></div>
-        <div class="kpi-card"><div class="val" style="color: #eab308;">${st.avgScore}⭐</div><div class="lbl">综合好评率</div></div>
-        <div class="kpi-card" id="cardKpiTimeout" style="cursor: pointer;"><div class="val" style="color: var(--danger);">${st.timeouts}</div><div class="lbl">⚠️ 超时工单 (点击过滤)</div></div>
+        ${kpi('i-brand', 'receipt', st.total, '累计报修总数')}
+        ${kpi('i-warn', 'clock', st.pending + st.assigned + st.working, '在办工单')}
+        ${kpi('i-ok', 'checkCircle', `${st.finishRate}%`, '综合办结率')}
+        ${kpi('i-cyan', 'star', `${st.avgScore}`, '平均服务评分')}
+        ${kpi('i-danger', 'alert', st.timeouts, '超时工单（点击过滤）', true)}
       </div>
 
-      <div class="card">
-        <div class="card-title"><span>📊 故障分类报修分布排行</span></div>
-        <div style="display: flex; flex-direction: column; gap: 8px;">${renderBarList(st.catMap, st.total)}</div>
-      </div>
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">${icon('chart', 16)}故障分类报修分布</div>
+          <span class="card-sub">按工单量排序</span>
+        </div>
+        <div class="bar-list">${renderBarList(st.catMap)}</div>
+      </section>
 
-      <div class="card">
-        <div class="card-title"><span>🏢 校区楼栋报修频次排行</span></div>
-        <div style="display: flex; flex-direction: column; gap: 8px;">${renderBarList(st.bldgMap, st.total)}</div>
-      </div>
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">${icon('school', 16)}校区楼栋报修频次</div>
+          <span class="card-sub">便于定位高频区域</span>
+        </div>
+        <div class="bar-list">${renderBarList(st.bldgMap)}</div>
+      </section>
     `;
 
-    document.getElementById('cardKpiTimeout').onclick = () => {
-      filterState.timeoutOnly = true;
-      filterState.status = 'all';
-      switchTab('pool');
-    };
+    const timeoutCard = document.getElementById('cardKpiTimeout');
+    if (timeoutCard) {
+      timeoutCard.onclick = () => {
+        filterState.timeoutOnly = true;
+        filterState.status = 'all';
+        switchTab('pool');
+      };
+    }
   } catch (err) {
-    container.innerHTML = `<div class="card text-muted" style="color: var(--danger);">加载统计失败: ${escapeHtml(err.message)}</div>`;
+    container.innerHTML = emptyBlock('alert', '统计加载失败', err.message);
   }
 }
 
-function renderBarList(map, total) {
-  if (!map) return '<div class="text-muted">暂无数据</div>';
+function renderBarList(map) {
+  if (!map) return '<div class="subtle fs-13">暂无数据</div>';
   const keys = Object.keys(map).sort((a, b) => map[b] - map[a]);
-  if (keys.length === 0) return '<div class="text-muted">暂无数据</div>';
+  if (keys.length === 0) return '<div class="subtle fs-13">暂无数据</div>';
   const max = map[keys[0]] || 1;
-  return keys.map((k) => {
-    const v = map[k];
-    const pct = Math.round((v / max) * 100);
-    return `
-      <div style="display: flex; align-items: center; gap: 10px; font-size: 13px;">
-        <div style="width: 85px; flex: none; text-align: right; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(k)}</div>
-        <div style="flex: 1; height: 14px; background: #eef2f8; border-radius: 7px; overflow: hidden;">
-          <div style="width: ${pct}%; height: 100%; background: linear-gradient(90deg, #2563eb, #38bdf8); border-radius: 7px;"></div>
-        </div>
-        <div style="width: 36px; flex: none; text-align: right; font-weight: 700;">${v}</div>
-      </div>
-    `;
-  }).join('');
+  return keys
+    .map((k) => {
+      const v = map[k];
+      const pct = Math.round((v / max) * 100);
+      return `
+        <div class="bar-row">
+          <span class="bar-name">${escapeHtml(k)}</span>
+          <span class="bar-track"><span class="bar-fill" style="width: ${pct}%;"></span></span>
+          <span class="bar-val">${v}</span>
+        </div>`;
+    })
+    .join('');
 }
 
 // ----------------- 3. 基础配置中心 -----------------
 function renderManageView() {
+  const sub = (key, iconName, label) =>
+    `<span class="chip ${subManageTab === key ? 'active' : ''}" data-sub="${key}">${icon(iconName, 15)}${label}</span>`;
+
   return `
-    <div class="card">
-      <div class="card-title"><span>⚙️ 后勤基础数据与系统设置</span></div>
-      <div class="chips-group" id="manageSubTabChips">
-        <span class="chip ${subManageTab === 'workers' ? 'active' : ''}" data-sub="workers">👨‍🔧 维修师傅管理</span>
-        <span class="chip ${subManageTab === 'buildings' ? 'active' : ''}" data-sub="buildings">🏢 校区楼栋管理</span>
-        <span class="chip ${subManageTab === 'categories' ? 'active' : ''}" data-sub="categories">🏷️ 故障分类管理</span>
-        <span class="chip ${subManageTab === 'settings' ? 'active' : ''}" data-sub="settings">🔔 预警与机器人通知</span>
+    <section class="card">
+      <div class="card-head">
+        <div class="card-title">${icon('sliders', 16)}基础数据与系统设置</div>
       </div>
-    </div>
+      <div class="chips-group" id="manageSubTabChips">
+        ${sub('workers', 'users', '维修师傅')}
+        ${sub('buildings', 'school', '校区楼栋')}
+        ${sub('categories', 'layers', '故障分类')}
+        ${sub('settings', 'bell', '预警与通知')}
+      </div>
+    </section>
     <div id="manageSubContainer"></div>
   `;
 }
 
 function bindManageEvents() {
-  document.getElementById('manageSubTabChips').onclick = (e) => {
-    const chip = e.target.closest('.chip');
-    if (!chip) return;
-    subManageTab = chip.dataset.sub;
-    document.querySelectorAll('#manageSubTabChips .chip').forEach((c) => c.classList.remove('active'));
-    chip.classList.add('active');
-    loadSubManage();
-  };
+  bindChipRadioGroup(document.getElementById('manageSubTabChips'), {
+    valueKey: 'sub',
+    label: '基础数据配置分类',
+    onChange: (sub) => {
+      subManageTab = sub;
+      loadSubManage();
+    },
+  });
   loadSubManage();
+}
+
+function subCardShell(title, iconName, addBtnId, addLabel, wrapperId) {
+  return `
+    <section class="card">
+      <div class="card-head wrap">
+        <div class="card-title">${icon(iconName, 16)}${title}</div>
+        <button class="btn btn-sm btn-primary" id="${addBtnId}" type="button">${icon('plus', 14)}${addLabel}</button>
+      </div>
+      <div id="${wrapperId}">${skeletonRows(2)}</div>
+    </section>`;
 }
 
 async function loadSubManage() {
   const container = document.getElementById('manageSubContainer');
+  if (!container) return;
+
   if (subManageTab === 'workers') {
-    container.innerHTML = `
-      <div class="card">
-        <div class="card-title">
-          <span>维修师傅账号与专长</span>
-          <button class="btn btn-sm btn-ok" id="btnAddWorkerBtn">+ 添加师傅账号</button>
-        </div>
-        <div id="workerListWrapper"><div class="text-muted">正在加载师傅列表...</div></div>
-      </div>
-    `;
+    container.innerHTML = subCardShell('维修师傅账号与专长', 'users', 'btnAddWorkerBtn', '添加师傅', 'workerListWrapper');
     document.getElementById('btnAddWorkerBtn').onclick = openAddWorkerModal;
     loadWorkersTable();
   } else if (subManageTab === 'buildings') {
-    container.innerHTML = `
-      <div class="card">
-        <div class="card-title">
-          <span>校区楼栋区域维护</span>
-          <button class="btn btn-sm btn-ok" id="btnAddBldgBtn">+ 添加楼栋</button>
-        </div>
-        <div id="bldgListWrapper"><div class="text-muted">正在加载楼栋列表...</div></div>
-      </div>
-    `;
+    container.innerHTML = subCardShell('校区楼栋区域维护', 'school', 'btnAddBldgBtn', '添加楼栋', 'bldgListWrapper');
     document.getElementById('btnAddBldgBtn').onclick = openAddBldgModal;
     loadBldgsTable();
   } else if (subManageTab === 'categories') {
-    container.innerHTML = `
-      <div class="card">
-        <div class="card-title">
-          <span>报修分类项目维护</span>
-          <button class="btn btn-sm btn-ok" id="btnAddCatBtn">+ 添加分类</button>
-        </div>
-        <div id="catListWrapper"><div class="text-muted">正在加载分类列表...</div></div>
-      </div>
-    `;
+    container.innerHTML = subCardShell('报修分类项目维护', 'layers', 'btnAddCatBtn', '添加分类', 'catListWrapper');
     document.getElementById('btnAddCatBtn').onclick = openAddCatModal;
     loadCatsTable();
   } else if (subManageTab === 'settings') {
-    container.innerHTML = `<div class="card text-muted">正在读取系统设置...</div>`;
+    container.innerHTML = skeletonRows(2);
     loadSettingsForm();
   }
 }
 
+function simpleTable(headers, rowsHtml) {
+  return `
+    <div class="tbl-wrap">
+      <div class="tbl-scroll">
+        <table class="tbl">
+          <thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
 async function loadWorkersTable() {
   const box = document.getElementById('workerListWrapper');
+  if (!box) return;
   try {
     const list = await request('/api/admin/workers', { token: adminToken });
-    box.innerHTML = `
-      <table style="width: 100%; border-collapse: collapse; font-size: 13px;" border="1" cellpadding="8" bordercolor="#e2e8f0">
-        <thead style="background: #f8fafc;">
-          <tr><th>姓名</th><th>工号/手机</th><th>维修专长</th><th>状态</th><th>操作</th></tr>
-        </thead>
-        <tbody>
-          ${list.map((w) => `
-            <tr>
-              <td><strong>${escapeHtml(w.name)}</strong></td>
-              <td>${escapeHtml(w.phone)}</td>
-              <td>${escapeHtml(w.skill || '--')}</td>
-              <td>${w.active ? '<span class="badge b-done">启用</span>' : '<span class="badge b-rejected">停用</span>'}</td>
-              <td>
-                <button class="btn btn-sm btn-ghost" onclick="window.editWorkerPwd('${escapeHtml(w.id)}')">重置密码</button>
-                <button class="btn btn-sm btn-danger" onclick="window.deleteWorker('${escapeHtml(w.id)}')">删除</button>
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    `;
+    if (!list.length) {
+      box.innerHTML = emptyBlock('users', '暂无维修师傅', '点击右上角添加第一个师傅账号');
+      return;
+    }
+    box.innerHTML = simpleTable(
+      ['姓名', '工号 / 手机', '维修专长', '状态', '操作'],
+      list.map((w) => `
+        <tr>
+          <td class="cell-primary"><div class="cell-title">${escapeHtml(w.name)}</div></td>
+          <td data-l="手机号" class="mono">${escapeHtml(w.phone)}</td>
+          <td data-l="专长">${escapeHtml(w.skill || '--')}</td>
+          <td data-l="状态">${w.active ? '<span class="badge b-done">启用</span>' : '<span class="badge b-rejected">停用</span>'}</td>
+          <td data-l="" class="no-label">
+            <div class="tbl-actions">
+              <button class="btn btn-sm btn-outline" type="button" data-act="worker-pwd" data-id="${escapeHtml(w.id)}">${icon('lock', 14)}重置密码</button>
+              <button class="btn btn-sm btn-danger" type="button" data-act="worker-del" data-id="${escapeHtml(w.id)}">${icon('trash', 14)}删除</button>
+            </div>
+          </td>
+        </tr>`).join('')
+    );
   } catch (err) {
-    box.innerHTML = `<div class="text-muted" style="color: var(--danger);">加载失败: ${escapeHtml(err.message)}</div>`;
+    renderLoadError(box, err, () => loadWorkersTable());
   }
 }
 
-window.editWorkerPwd = async (id) => {
-  const newPwd = prompt('请输入要为该师傅重置的密码：');
+const editWorkerPwd = async (id) => {
+  const newPwd = await promptDialog({
+    title: '重置登录密码',
+    desc: '重置后请通知该师傅使用新密码登录。',
+    label: '新密码',
+    placeholder: '至少 4 位',
+    maxlength: 32,
+    iconName: 'lock',
+    validate: (v) => (v.length < 4 ? '密码至少需要 4 位' : null),
+  });
   if (!newPwd) return;
   try {
-    await request(`/api/admin/workers/${id}`, {
-      method: 'PUT',
-      token: adminToken,
-      body: { password: newPwd },
-    });
-    toast('密码已重置！');
+    await request(`/api/admin/workers/${id}`, { method: 'PUT', token: adminToken, body: { password: newPwd } });
+    toast('密码已重置');
     loadWorkersTable();
   } catch (err) {
     toast(err.message);
   }
 };
 
-window.deleteWorker = async (id) => {
-  if (!confirm('确定删除该师傅账号？')) return;
+const deleteWorker = async (id) => {
+  const ok = await confirmDialog({
+    title: '删除维修师傅账号',
+    desc: '删除后该师傅将无法登录，其历史完工记录会保留。此操作不可撤销。',
+    okText: '确认删除',
+    danger: true,
+    iconName: 'trash',
+  });
+  if (!ok) return;
   try {
-    await request(`/api/admin/workers/${id}`, {
-      method: 'DELETE',
-      token: adminToken,
-    });
+    await request(`/api/admin/workers/${id}`, { method: 'DELETE', token: adminToken });
     toast('已删除');
     loadWorkersTable();
     loadConfig();
@@ -686,14 +906,31 @@ window.deleteWorker = async (id) => {
 function openAddWorkerModal() {
   openModal(`
     <div class="modal-header">
-      <h3>添加维修师傅账号</h3>
-      <button class="modal-close-btn" onclick="window.closeModal()">×</button>
+      <h3>${icon('plus', 18)}添加维修师傅账号</h3>
+      <button class="modal-close-btn" type="button" data-act="modal-close" aria-label="关闭">${icon('close', 16)}</button>
     </div>
-    <div class="form-group"><label><span class="req">*</span>师傅姓名</label><input type="text" id="add_w_name" placeholder="例如：刘师傅"></div>
-    <div class="form-group"><label><span class="req">*</span>手机号 (兼登录账号)</label><input type="tel" id="add_w_phone" maxlength="11" placeholder="11位手机号"></div>
-    <div class="form-group"><label>擅长项目</label><input type="text" id="add_w_skill" placeholder="例如：水电暖通、多媒体设施"></div>
-    <div class="form-group"><label>初始密码</label><input type="text" id="add_w_pwd" value="worker888"></div>
-    <button class="btn btn-ok" id="btnConfirmAddWorker">确认创建</button>
+    <div class="modal-body">
+      <div class="field">
+        <label class="label" for="add_w_name"><span class="req">*</span>师傅姓名</label>
+        <input class="control" type="text" id="add_w_name" placeholder="例如：刘师傅">
+      </div>
+      <div class="field">
+        <label class="label" for="add_w_phone"><span class="req">*</span>手机号（兼登录账号）</label>
+        <input class="control" type="tel" id="add_w_phone" maxlength="11" inputmode="numeric" placeholder="11 位手机号">
+      </div>
+      <div class="field">
+        <label class="label" for="add_w_skill">擅长项目</label>
+        <input class="control" type="text" id="add_w_skill" placeholder="例如：水电暖通、多媒体设施">
+      </div>
+      <div class="field">
+        <label class="label" for="add_w_pwd">初始密码</label>
+        <input class="control" type="text" id="add_w_pwd" value="worker888">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" type="button" data-act="modal-close">取消</button>
+      <button class="btn btn-primary" id="btnConfirmAddWorker" type="button">${icon('check', 16)}确认创建</button>
+    </div>
   `);
 
   document.getElementById('btnConfirmAddWorker').onclick = async () => {
@@ -702,233 +939,328 @@ function openAddWorkerModal() {
     const skill = document.getElementById('add_w_skill').value.trim();
     const password = document.getElementById('add_w_pwd').value.trim();
     if (!name || !phone) { toast('请填写姓名和手机号'); return; }
-    try {
-      await request('/api/admin/workers', {
-        method: 'POST',
-        token: adminToken,
-        body: { name, phone, skill, password },
-      });
-      toast('师傅账号创建成功！');
+    const btn = document.getElementById('btnConfirmAddWorker');
+    await runAction(btn, '正在创建…', async () => {
+      await request('/api/admin/workers', { method: 'POST', token: adminToken, body: { name, phone, skill, password } });
+      toast('师傅账号创建成功');
       closeModal();
       loadWorkersTable();
       loadConfig();
-    } catch (err) {
-      toast(err.message);
-    }
+    });
   };
 }
 
 async function loadBldgsTable() {
   const box = document.getElementById('bldgListWrapper');
-  const list = await request('/api/admin/buildings', { token: adminToken });
-  box.innerHTML = `
-    <table style="width: 100%; border-collapse: collapse; font-size: 13px;" border="1" cellpadding="8" bordercolor="#e2e8f0">
-      <thead style="background: #f8fafc;"><tr><th>楼栋名称</th><th>状态</th><th>操作</th></tr></thead>
-      <tbody>
-        ${list.map((b) => `
-          <tr>
-            <td><strong>${escapeHtml(b.name)}</strong></td>
-            <td><span class="badge b-done">启用</span></td>
-            <td><button class="btn btn-sm btn-danger" onclick="window.deleteBldg(${b.id})">删除</button></td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  `;
+  if (!box) return;
+  try {
+    const list = await request('/api/admin/buildings', { token: adminToken });
+    if (!list.length) {
+      box.innerHTML = emptyBlock('school', '暂无楼栋', '点击右上角添加楼栋');
+      return;
+    }
+    box.innerHTML = simpleTable(
+      ['楼栋名称', '状态', '操作'],
+      list.map((b) => `
+        <tr>
+          <td class="cell-primary"><div class="cell-title">${icon('school', 14)}<span>${escapeHtml(b.name)}</span></div></td>
+          <td data-l="状态"><span class="badge b-done">启用</span></td>
+          <td data-l="" class="no-label">
+            <div class="tbl-actions">
+              <button class="btn btn-sm btn-danger" type="button" data-act="bldg-del" data-id="${b.id}">${icon('trash', 14)}删除</button>
+            </div>
+          </td>
+        </tr>`).join('')
+    );
+  } catch (err) {
+    renderLoadError(box, err, () => loadBldgsTable());
+  }
 }
 
-window.deleteBldg = async (id) => {
-  if (!confirm('确定删除该楼栋？')) return;
-  await request(`/api/admin/buildings/${id}`, { method: 'DELETE', token: adminToken });
-  toast('已删除');
-  loadBldgsTable();
-  loadConfig();
+const deleteBldg = async (id) => {
+  const ok = await confirmDialog({
+    title: '删除楼栋',
+    desc: '删除后师生报修时将无法再选择该楼栋，历史工单不受影响。此操作不可撤销。',
+    okText: '确认删除',
+    danger: true,
+    iconName: 'trash',
+  });
+  if (!ok) return;
+  try {
+    await request(`/api/admin/buildings/${id}`, { method: 'DELETE', token: adminToken });
+    toast('已删除');
+    loadBldgsTable();
+    loadConfig();
+  } catch (err) {
+    toast(err.message);
+  }
 };
 
-function openAddBldgModal() {
-  const name = prompt('请输入新楼栋名称（例如：实验实训楼B座）：');
+async function openAddBldgModal() {
+  const name = await promptDialog({
+    title: '添加楼栋',
+    desc: '楼栋会出现在报修表单的位置下拉选项中。',
+    label: '楼栋名称',
+    placeholder: '例如：实验实训楼B座',
+    maxlength: 20,
+    iconName: 'layers',
+  });
   if (!name) return;
-  request('/api/admin/buildings', { method: 'POST', token: adminToken, body: { name: name.trim() } }).then(() => {
+  try {
+    await request('/api/admin/buildings', { method: 'POST', token: adminToken, body: { name: name.trim() } });
     toast('楼栋添加成功');
     loadBldgsTable();
     loadConfig();
-  }).catch((e) => toast(e.message));
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 async function loadCatsTable() {
   const box = document.getElementById('catListWrapper');
-  const list = await request('/api/admin/categories', { token: adminToken });
-  box.innerHTML = `
-    <table style="width: 100%; border-collapse: collapse; font-size: 13px;" border="1" cellpadding="8" bordercolor="#e2e8f0">
-      <thead style="background: #f8fafc;"><tr><th>分类名称</th><th>状态</th><th>操作</th></tr></thead>
-      <tbody>
-        ${list.map((c) => `
-          <tr>
-            <td><strong>${escapeHtml(c.name)}</strong></td>
-            <td><span class="badge b-done">启用</span></td>
-            <td><button class="btn btn-sm btn-danger" onclick="window.deleteCat(${c.id})">删除</button></td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  `;
+  if (!box) return;
+  try {
+    const list = await request('/api/admin/categories', { token: adminToken });
+    if (!list.length) {
+      box.innerHTML = emptyBlock('layers', '暂无分类', '点击右上角添加故障分类');
+      return;
+    }
+    box.innerHTML = simpleTable(
+      ['分类名称', '状态', '操作'],
+      list.map((c) => `
+        <tr>
+          <td class="cell-primary"><div class="cell-title">${categoryIcon(c.name, 14)}<span>${escapeHtml(c.name)}</span></div></td>
+          <td data-l="状态"><span class="badge b-done">启用</span></td>
+          <td data-l="" class="no-label">
+            <div class="tbl-actions">
+              <button class="btn btn-sm btn-danger" type="button" data-act="cat-del" data-id="${c.id}">${icon('trash', 14)}删除</button>
+            </div>
+          </td>
+        </tr>`).join('')
+    );
+  } catch (err) {
+    renderLoadError(box, err, () => loadCatsTable());
+  }
 }
 
-window.deleteCat = async (id) => {
-  if (!confirm('确定删除该分类？')) return;
-  await request(`/api/admin/categories/${id}`, { method: 'DELETE', token: adminToken });
-  toast('已删除');
-  loadCatsTable();
-  loadConfig();
+const deleteCat = async (id) => {
+  const ok = await confirmDialog({
+    title: '删除故障分类',
+    desc: '删除后新建报修将无法选择该分类，已有工单的分类名称保留。此操作不可撤销。',
+    okText: '确认删除',
+    danger: true,
+    iconName: 'trash',
+  });
+  if (!ok) return;
+  try {
+    await request(`/api/admin/categories/${id}`, { method: 'DELETE', token: adminToken });
+    toast('已删除');
+    loadCatsTable();
+    loadConfig();
+  } catch (err) {
+    toast(err.message);
+  }
 };
 
-function openAddCatModal() {
-  const name = prompt('请输入新分类名称（例如：弱电监控设备）：');
+async function openAddCatModal() {
+  const name = await promptDialog({
+    title: '添加故障分类',
+    desc: '分类名称建议 2–6 个字，便于师生快速选择。',
+    label: '分类名称',
+    placeholder: '例如：弱电监控设备',
+    maxlength: 12,
+    iconName: 'layers',
+  });
   if (!name) return;
-  request('/api/admin/categories', { method: 'POST', token: adminToken, body: { name: name.trim() } }).then(() => {
+  try {
+    await request('/api/admin/categories', { method: 'POST', token: adminToken, body: { name: name.trim() } });
     toast('分类添加成功');
     loadCatsTable();
     loadConfig();
-  }).catch((e) => toast(e.message));
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 async function loadSettingsForm() {
   const box = document.getElementById('manageSubContainer');
-  const s = await request('/api/admin/settings', { token: adminToken });
-  box.innerHTML = `
-    <div class="card">
-      <div class="card-title"><span>🔔 SLA 预警、工作群通知与密码设置</span></div>
-      <div class="form-group">
-        <label>系统单位抬头名称</label>
-        <input type="text" id="s_school_name" value="${escapeHtml(s.school_name || '')}">
-      </div>
-      <div class="grid-form">
-        <div class="form-group">
-          <label>待受理超时 (小时)</label>
-          <input type="number" id="s_sla_pending" value="${escapeHtml(s.sla_pending_hours || 4)}">
+  try {
+    const s = await request('/api/admin/settings', { token: adminToken });
+    box.innerHTML = `
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">${icon('school', 16)}机构信息</div>
         </div>
-        <div class="form-group">
-          <label>派工未接单超时 (小时)</label>
-          <input type="number" id="s_sla_accept" value="${escapeHtml(s.sla_accept_hours || 8)}">
+        <div class="field">
+          <label class="label" for="s_school_name">系统单位抬头名称</label>
+          <input class="control" type="text" id="s_school_name" value="${escapeHtml(s.school_name || '')}">
         </div>
-        <div class="form-group">
-          <label>接单未完工超时 (小时)</label>
-          <input type="number" id="s_sla_finish" value="${escapeHtml(s.sla_finish_hours || 24)}">
-        </div>
-      </div>
-      <hr style="border: none; border-top: 1px dashed var(--border); margin: 16px 0;">
-      <div class="form-group">
-        <label>机器人通知渠道 (Webhook)</label>
-        <select id="s_webhook_type">
-          <option value="none" ${s.webhook_type === 'none' ? 'selected' : ''}>关闭推送</option>
-          <option value="wecom" ${s.webhook_type === 'wecom' ? 'selected' : ''}>企业微信群机器人</option>
-          <option value="dingtalk" ${s.webhook_type === 'dingtalk' ? 'selected' : ''}>钉钉群机器人</option>
-          <option value="feishu" ${s.webhook_type === 'feishu' ? 'selected' : ''}>飞书自定义机器人</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Webhook 推送地址 (URL)</label>
-        <input type="text" id="s_webhook_url" placeholder="https://qyapi.weixin.qq.com/... 或 oapi.dingtalk.com/..." value="${escapeHtml(s.webhook_url || '')}">
-      </div>
-      <div class="form-group">
-        <label>加签安全密钥 (钉钉可选)</label>
-        <input type="text" id="s_webhook_secret" placeholder="SEC..." value="${escapeHtml(s.webhook_secret || '')}">
-      </div>
-      <div style="margin-bottom: 16px;">
-        <button class="btn btn-sm btn-ghost" id="btnTestWebhook">🔔 发送测试卡片到群</button>
-      </div>
-      <hr style="border: none; border-top: 1px dashed var(--border); margin: 16px 0;">
-      <div class="form-group">
-        <label>修改总务管理员登录口令 (留空不改)</label>
-        <input type="password" id="s_admin_pwd" placeholder="输入新的总务管理密码">
-      </div>
-      <button class="btn btn-ok" id="btnSaveSettings">保存所有设置</button>
-    </div>
-  `;
+      </section>
 
-  document.getElementById('btnTestWebhook').onclick = async () => {
-    const webhook_type = document.getElementById('s_webhook_type').value;
-    const webhook_url = document.getElementById('s_webhook_url').value.trim();
-    const webhook_secret = document.getElementById('s_webhook_secret').value.trim();
-    if (!webhook_url) { toast('请先输入 Webhook 推送地址'); return; }
-    toast('正在发送测试消息...');
-    try {
-      await request('/api/admin/settings/test-webhook', {
-        method: 'POST',
-        token: adminToken,
-        body: { webhook_type, webhook_url, webhook_secret },
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">${icon('clock', 16)}SLA 超时预警（小时）</div>
+        </div>
+        <div class="grid-form">
+          <div class="field">
+            <label class="label" for="s_sla_pending">待受理超时</label>
+            <input class="control" type="number" id="s_sla_pending" value="${escapeHtml(s.sla_pending_hours || 4)}">
+          </div>
+          <div class="field">
+            <label class="label" for="s_sla_accept">派工未接单超时</label>
+            <input class="control" type="number" id="s_sla_accept" value="${escapeHtml(s.sla_accept_hours || 8)}">
+          </div>
+          <div class="field">
+            <label class="label" for="s_sla_finish">接单未完工超时</label>
+            <input class="control" type="number" id="s_sla_finish" value="${escapeHtml(s.sla_finish_hours || 24)}">
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">${icon('bell', 16)}工作群机器人通知</div>
+        </div>
+        <div class="field">
+          <label class="label" for="s_webhook_type">推送渠道</label>
+          <div class="select-wrap">
+            <select class="control" id="s_webhook_type">
+              <option value="none" ${s.webhook_type === 'none' ? 'selected' : ''}>关闭推送</option>
+              <option value="wecom" ${s.webhook_type === 'wecom' ? 'selected' : ''}>企业微信群机器人</option>
+              <option value="dingtalk" ${s.webhook_type === 'dingtalk' ? 'selected' : ''}>钉钉群机器人</option>
+              <option value="feishu" ${s.webhook_type === 'feishu' ? 'selected' : ''}>飞书自定义机器人</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label class="label" for="s_webhook_url">Webhook 推送地址</label>
+          <input class="control" type="text" id="s_webhook_url" placeholder="https://qyapi.weixin.qq.com/..." value="${escapeHtml(s.webhook_url || '')}">
+        </div>
+        <div class="field">
+          <label class="label" for="s_webhook_secret">加签安全密钥<span class="opt">钉钉可选</span></label>
+          <input class="control" type="text" id="s_webhook_secret" placeholder="SEC..." value="${escapeHtml(s.webhook_secret || '')}">
+        </div>
+        <button class="btn btn-sm btn-outline" id="btnTestWebhook" type="button">${icon('send', 14)}发送测试卡片到群</button>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">${icon('lock', 16)}管理员口令</div>
+        </div>
+        <div class="field">
+          <label class="label" for="s_admin_pwd">修改登录口令<span class="opt">留空则不修改</span></label>
+          <input class="control" type="password" id="s_admin_pwd" placeholder="输入新的总务管理密码" autocomplete="new-password">
+        </div>
+        <button class="btn btn-primary btn-block mt-8" id="btnSaveSettings" type="button">${icon('check', 16)}保存所有设置</button>
+      </section>
+    `;
+
+    document.getElementById('btnTestWebhook').onclick = async () => {
+      const webhook_type = document.getElementById('s_webhook_type').value;
+      const webhook_url = document.getElementById('s_webhook_url').value.trim();
+      const webhook_secret = document.getElementById('s_webhook_secret').value.trim();
+      if (!webhook_url) { toast('请先输入 Webhook 推送地址'); return; }
+      const btn = document.getElementById('btnTestWebhook');
+      await runAction(btn, '推送中…', async () => {
+        await request('/api/admin/settings/test-webhook', {
+          method: 'POST',
+          token: adminToken,
+          body: { webhook_type, webhook_url, webhook_secret },
+        });
+        toast('测试卡片已成功推送到工作群');
       });
-      toast('🎉 测试卡片已成功推送到工作群！');
-    } catch (err) {
-      toast(err.message);
-    }
-  };
-
-  document.getElementById('btnSaveSettings').onclick = async () => {
-    const payload = {
-      school_name: document.getElementById('s_school_name').value.trim(),
-      sla_pending_hours: document.getElementById('s_sla_pending').value.trim(),
-      sla_accept_hours: document.getElementById('s_sla_accept').value.trim(),
-      sla_finish_hours: document.getElementById('s_sla_finish').value.trim(),
-      webhook_type: document.getElementById('s_webhook_type').value,
-      webhook_url: document.getElementById('s_webhook_url').value.trim(),
-      webhook_secret: document.getElementById('s_webhook_secret').value.trim(),
     };
-    const pwd = document.getElementById('s_admin_pwd').value.trim();
-    if (pwd) payload.admin_password = pwd;
 
-    try {
-      await request('/api/admin/settings', {
-        method: 'POST',
-        token: adminToken,
-        body: payload,
+    document.getElementById('btnSaveSettings').onclick = async () => {
+      const payload = {
+        school_name: document.getElementById('s_school_name').value.trim(),
+        sla_pending_hours: document.getElementById('s_sla_pending').value.trim(),
+        sla_accept_hours: document.getElementById('s_sla_accept').value.trim(),
+        sla_finish_hours: document.getElementById('s_sla_finish').value.trim(),
+        webhook_type: document.getElementById('s_webhook_type').value,
+        webhook_url: document.getElementById('s_webhook_url').value.trim(),
+        webhook_secret: document.getElementById('s_webhook_secret').value.trim(),
+      };
+      const pwd = document.getElementById('s_admin_pwd').value.trim();
+      if (pwd) payload.admin_password = pwd;
+
+      const btn = document.getElementById('btnSaveSettings');
+      await runAction(btn, '正在保存…', async () => {
+        await request('/api/admin/settings', { method: 'POST', token: adminToken, body: payload });
+        toast('系统配置已更新');
+        loadConfig();
       });
-      toast('系统配置已更新！');
-      loadConfig();
-    } catch (err) {
-      toast(err.message);
-    }
-  };
+    };
+  } catch (err) {
+    box.innerHTML = emptyBlock('alert', '配置加载失败', err.message);
+  }
 }
 
 // ----------------- 4. 场所报修码 -----------------
 function renderQrView() {
   const options = appConfig.buildings.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
   return `
-    <div class="card">
-      <div class="card-title"><span>📱 场所二维码生成器</span></div>
-      <div class="text-muted" style="margin-bottom: 12px;">张贴在教室、寝室或实验室门前，师生微信扫码自动识别地点并打开报修表单。</div>
-      <div class="grid-form">
-        <select id="qrBldgSelect">${options}</select>
-        <input type="text" id="qrRoomInput" placeholder="例如：305教室" value="305教室">
+    <section class="card">
+      <div class="card-head">
+        <div class="card-title">${icon('qr', 16)}场所二维码生成器</div>
+        <span class="card-sub">扫码自动带入地点</span>
       </div>
-      <button class="btn btn-sm" id="btnMakeQr" style="margin-top: 10px; width: 140px;">生成报修码</button>
-      <div style="text-align: center; margin-top: 20px;" id="qrCodeResultBox"></div>
-    </div>
+      <p class="hint mb-12">${icon('info', 13)}将生成的二维码张贴在教室、寝室或实验室门前，师生扫码即可自动识别地点并打开报修表单。</p>
+      <div class="grid-form">
+        <div class="field">
+          <label class="label" for="qrBldgSelect">所属楼栋</label>
+          <div class="select-wrap"><select class="control" id="qrBldgSelect">${options}</select></div>
+        </div>
+        <div class="field">
+          <label class="label" for="qrRoomInput">房间 / 区域</label>
+          <input class="control" type="text" id="qrRoomInput" placeholder="例如：305教室" value="305教室">
+        </div>
+      </div>
+      <button class="btn btn-primary mt-8" id="btnMakeQr" type="button">${icon('qr', 16)}生成报修码</button>
+      <div class="text-center mt-16" id="qrCodeResultBox"></div>
+    </section>
   `;
 }
 
 function bindQrEvents() {
-  document.getElementById('btnMakeQr').onclick = () => {
+  const btn = document.getElementById('btnMakeQr');
+  if (!btn) return;
+  btn.onclick = () => {
     const bldg = document.getElementById('qrBldgSelect').value;
     const room = document.getElementById('qrRoomInput').value.trim();
     const url = `${window.location.origin}/?bldg=${encodeURIComponent(bldg)}&room=${encodeURIComponent(room)}`;
-
     const imgTag = generateQrImage(url, 6);
     document.getElementById('qrCodeResultBox').innerHTML = `
-      <div style="display: inline-block; padding: 14px; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);">
+      <div class="qr-card">
         ${imgTag}
-        <div style="font-weight: 700; margin-top: 8px;">${escapeHtml(bldg)} · ${escapeHtml(room)}</div>
-        <div class="text-muted" style="font-size: 11px;">扫码直接报修</div>
-      </div>
-    `;
+        <div class="qr-title">${escapeHtml(bldg)} · ${escapeHtml(room)}</div>
+        <div class="qr-desc">微信扫码直接报修</div>
+      </div>`;
   };
 }
 
 function logout() {
   adminToken = '';
   localStorage.removeItem('bx_admin_token');
+  if (poolPoller) { poolPoller.destroy(); poolPoller = null; }
+  if (labelTimer) { clearInterval(labelTimer); labelTimer = null; }
+  seenTicketIds.clear();
+  lastPoolRefresh = 0;
   renderLoginView();
 }
+
+// ----------------- 事件委托（替代 onclick="window.xxx()"） -----------------
+delegateActions({
+  'admin-detail': ({ id }) => openAdminDetail(id),
+  assign: ({ id }) => openAssignModal(id),
+  reject: ({ id }) => rejectTicket(id),
+  print: ({ id }) => printTicket(id),
+  'worker-pwd': ({ id }) => editWorkerPwd(id),
+  'worker-del': ({ id }) => deleteWorker(id),
+  'bldg-del': ({ id }) => deleteBldg(id),
+  'cat-del': ({ id }) => deleteCat(id),
+  'view-photo': ({ src }) => viewImage(src),
+  'modal-close': () => closeModal(),
+});
 
 init();
