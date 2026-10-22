@@ -1,3 +1,5 @@
+
+// QR Code Generator (MIT)
 // QR Code Generator for JavaScript
 //
 // Copyright (c) 2009 Kazuhiko Arase
@@ -2284,12 +2286,10 @@ var qrcode = function() {
 
 }();
 
-(function (factory) {
-  if (typeof define === 'function' && define.amd) {
-      define([], factory);
-  } else if (typeof exports === 'object') {
-      module.exports = factory();
-  }
-}(function () {
-    return qrcode;
-}));
+export function generateQrImage(text, size = 5) {
+  if (typeof qrcode === 'undefined') return '';
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  return qr.createImgTag(size, 8);
+}
