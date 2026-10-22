@@ -90,9 +90,32 @@ async function seedDefaults(db) {
 }
 
 // ------------------- 身份鉴权与 Token -------------------
+function uint8ToBase64(uint8) {
+  let binary = '';
+  const len = uint8.byteLength;
+  const CHUNK_SZ = 8192;
+  for (let i = 0; i < len; i += CHUNK_SZ) {
+    binary += String.fromCharCode.apply(null, uint8.subarray(i, Math.min(i + CHUNK_SZ, len)));
+  }
+  return btoa(binary);
+}
+
+function utf8ToBase64(str) {
+  return uint8ToBase64(new TextEncoder().encode(str));
+}
+
+function base64ToUtf8(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 async function createToken(payload, secret = 'cf-repair-key-2026') {
-  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const data = btoa(JSON.stringify(payload));
+  const header = utf8ToBase64(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const data = utf8ToBase64(JSON.stringify(payload));
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     'raw',
@@ -101,9 +124,9 @@ async function createToken(payload, secret = 'cf-repair-key-2026') {
     false,
     ['sign']
   );
-  const signature = await crypto.subtle.sign('HMAC', key, enc.encode(`${header}.${data}`));
-  const sig = btoa(String.fromCharCode(...new Uint8Array(signature)));
-  return `${header}.${data}.${sig}`;
+  const signature = await crypto.subtle.sign('HMAC', key, enc.encode(header + "." + data));
+  const sig = uint8ToBase64(new Uint8Array(signature));
+  return header + "." + data + "." + sig;
 }
 
 async function verifyToken(token, secret = 'cf-repair-key-2026') {
@@ -111,14 +134,13 @@ async function verifyToken(token, secret = 'cf-repair-key-2026') {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   try {
-    const payload = JSON.parse(atob(parts[1]));
+    const payload = JSON.parse(base64ToUtf8(parts[1]));
     if (payload.exp && payload.exp < Date.now()) return null;
     return payload;
   } catch (e) {
     return null;
   }
 }
-
 async function checkAdmin(request, env) {
   const db = env.DB || env.D1;
   const row = await db.prepare('SELECT value FROM settings WHERE key = ?').bind('admin_password').first();
@@ -371,7 +393,7 @@ export async function onRequest(context) {
       } else {
         // 未绑定 R2 时的平替：转换为 Base64 Data URL 直接可用
         const arrayBuf = await file.arrayBuffer();
-        const base64Str = btoa(String.fromCharCode(...new Uint8Array(arrayBuf)));
+        const base64Str = uint8ToBase64(new Uint8Array(arrayBuf));
         const mime = file.type || 'image/jpeg';
         return ok({ url: `data:${mime};base64,${base64Str}` });
       }
