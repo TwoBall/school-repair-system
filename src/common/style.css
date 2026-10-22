@@ -1967,6 +1967,12 @@ textarea.control {
     font-weight: 700;
     white-space: nowrap;
   }
+  /* 长标签（如「维修记录及耗材说明」9 个字）超过 17% 列宽，
+     fixed 布局下 nowrap 会溢出压进右侧内容列，需单独允许折行 */
+  .print-table th.th-wrap {
+    white-space: normal;
+    word-break: keep-all; /* 中文按词折行，避免单字竖排 */
+  }
   .print-table .cell-wide {
     width: 33%;
   }

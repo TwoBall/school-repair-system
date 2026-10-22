@@ -640,7 +640,7 @@ const printTicket = async (id) => {
         <td colspan="3" class="tall-60">${escapeHtml(t.desc)}</td>
       </tr>
       <tr>
-        <th>维修记录及耗材说明</th>
+        <th class="th-wrap">维修记录及耗材说明</th>
         <td colspan="3" class="tall-80">${escapeHtml(t.result || '现场排查中...')}</td>
       </tr>
     </table>
