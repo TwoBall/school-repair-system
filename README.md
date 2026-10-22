@@ -8,11 +8,34 @@
 
 ## 🌟 架构亮点
 
-- **前端三端独立**：基于 Vite 构建的 3 个独立独立入口（师生端 `/`、师傅端 `/worker`、总务端 `/admin`），物理隔离，安全纯粹。
+- **前端三端独立**：基于 Vite 构建的 3 个独立入口（师生端 `/`、师傅端 `/worker`、总务端 `/admin`），物理隔离，安全纯粹。
 - **全端响应式设计**：移动端大触控靶点（≥44px）、网格弹性表单、工单流转卡片、全屏模态窗口。
 - **后端服务**：由 **Cloudflare Pages Functions** 提供全套 RESTful API 与 Webhook 消息通知。
 - **持久化数据库**：基于 **Cloudflare D1**（分布式 SQLite），免费提供 5GB 存储空间与每日 10 万次写操作，系统内置首次访问**自动建表与种子数据填充**。
 - **现场图片存储**：基于 **Cloudflare R2**（S3 兼容对象存储），每月提供 **10GB 免费存储且 0 出网流量费**，专门保存现场报修照片与完工验收照片。
+
+---
+
+## 🎨 UI/UX 设计说明
+
+本轮对三端 UI 做了从零重做与体验打磨，完整记录见 👉 **[UI-UX优化成果报告.md](./UI-UX优化成果报告.md)**。
+
+- **Design System**：`src/common/style.css` 分为 令牌层 → 基础层 → 布局层 → 组件层 → 工具类 → 打印 → 减弱动效。浅色定义在 `:root`，深色由 `[data-theme="dark"]` 覆盖**同一套变量**，组件样式不写两遍。
+- **内联 SVG 图标**：`src/common/icons.js` 提供 56 个图标，全部 `stroke="currentColor"`，自动适配深浅色、零网络请求，**全项目零 emoji**。
+- **深色模式**：跟随系统 + 顶栏手动切换（`localStorage: bx_theme`）。三端 HTML 内联同步脚本预设主题，避免深色闪屏；切换时支持 View Transitions 圆形揭示动画，并在开启「减弱动效」时自动降级。
+- **交互原语统一**：Toast / Modal / Loading / 上传进度 / 轮询 / 事件委托全部在 `src/common/utils.js` **实现一次**，三端只做引用。
+- **可访问性**：单选 chips 具备 `radiogroup` 语义与方向键导航，表单错误可被读屏播报（`role="alert"`），表单控件均已建立标签关联。
+- **移动端专项**：≥44px 大触控靶点、 `<input capture="environment">` 直调相机、图片上传前自动压缩（默认长边 1600px / 质量 0.82）并显示真实进度。
+
+### 已落地的体验优化
+
+| 分类 | 内容 |
+| :--- | :--- |
+| **反馈与状态** | 9 处原生 `prompt`/`confirm` 改为自定义弹窗；13 个异步按钮统一 loading 与 spinner；列表失败态提供「重新加载」；网络异常可一键重试 |
+| **实时性** | 工单大池 / 师傅待办 30s 自动刷新，我的报修 45s；页面切后台自动停表，切回立即补拉；新工单与状态变更会上色提示 |
+| **表单体验** | 7 天本地草稿自动保存（`bx_reporter_draft`）；失焦即时校验；提交前**重复报修提醒**，防止重复派工 |
+| **健壮性** | 请求统一 20s 超时；网络 / 超时 / 5xx 判定为可重试，业务 4xx 不给重试；16 个 `window.*` 全局函数改造为事件委托，源码零全局挂载、CSP 友好 |
+| **白屏治理** | 三端 HTML 内联 critical CSS + 骨架屏（骨架自带变量，不依赖 CSS 令牌注入顺序） |
 
 ---
 
@@ -98,8 +121,36 @@
 - `vite.config.js`：Vite 多页面微应用构建配置
 - `src/`：前端模块化源码目录
   - `src/common/`：全局主题样式、响应式布局、API 请求、离线二维码与工具库
+    - `style.css`：Design System 样式令牌与全部组件样式
+    - `utils.js`：**交互原语唯一实现入口**（Toast / Modal / Loading / 上传 / 轮询 / 事件委托）
+    - `icons.js`：56 个内联 SVG 图标与深浅色主题管理
+    - `api.js`：统一 API 客户端（超时控制、错误归一化、可重试判定）
+    - `qrcode.js`：离线二维码渲染
   - `src/reporter/`：师生端专属业务逻辑
   - `src/worker/`：维修师傅端专属业务逻辑
   - `src/admin/`：总务处调度端专属业务逻辑
 - `functions/api/[[route]].js`：Cloudflare Pages Functions 边缘 API 全局网关（集成 D1 + R2）
 - `schema.sql`：D1 数据库建表脚本定义
+- `README.md`：本文件
+- [总务报修系统使用手册.md](./总务报修系统使用手册.md)：面向师生 / 师傅 / 管理员的操作手册
+- [UI-UX优化成果报告.md](./UI-UX优化成果报告.md)：UI 重做与 P0~P2 体验优化的完整技术记录
+
+---
+
+## 🛠 本地开发
+
+```bash
+npm install
+npm run dev      # 本地开发，/api 代理到 http://localhost:3000
+npm run build    # 产出到 dist/
+npm run preview  # 预览构建产物
+```
+
+### 开发约定（改动前端前请先读一遍）
+
+1. **交互原语只在 `src/common/utils.js` 实现一次**，三端引用，不要在各端重写。
+2. **异步按钮一律用 `runAction()`**，禁止手写 `btn.disabled`。
+3. **列表视图一律配 `createPoller` + 错误态重试**，`silent` 刷新失败必须保持原界面不动。
+4. **新增 `data-act` 必须同时补进 `delegateActions` 映射**。
+5. **骨架屏样式不能依赖 design token**（CSS 由 JS 注入、加载更晚），需自带变量。
+6. **新增动效必须被 `prefers-reduced-motion` 兜住**；注意伪元素不受全局 `*` 规则约束。
