@@ -1215,9 +1215,9 @@ function renderQrView() {
     <section class="card">
       <div class="card-head">
         <div class="card-title">${icon('qr', 16)}场所二维码生成器</div>
-        <span class="card-sub">扫码自动带入地点</span>
+        <span class="card-sub">扫码自动带入楼栋与房间</span>
       </div>
-      <p class="hint mb-12">${icon('info', 13)}将生成的二维码张贴在教室、寝室或实验室门前，师生扫码即可自动识别地点并打开报修表单。</p>
+      <p class="hint mb-12">${icon('info', 13)}张贴在教室、寝室或实验室门前；师生扫码后自动带入该楼栋与房间，直接进入报修表单，故障信息仍需本人填写。</p>
       <div class="grid-form">
         <div class="field">
           <label class="label" for="qrBldgSelect">所属楼栋</label>
@@ -1246,7 +1246,7 @@ function bindQrEvents() {
       <div class="qr-card">
         ${imgTag}
         <div class="qr-title">${escapeHtml(bldg)} · ${escapeHtml(room)}</div>
-        <div class="qr-desc">微信扫码直接报修</div>
+        <div class="qr-desc">扫码打开报修表单</div>
       </div>`;
   };
 }

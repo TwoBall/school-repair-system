@@ -2062,6 +2062,17 @@ textarea.control {
   flex-shrink: 0;
   color: var(--brand-600);
 }
+/* 选中后 meta 行提示「再点一次取消」，把撤销入口直接写在卡片上 */
+.tpl-meta-on {
+  display: none;
+}
+.tpl-card.active .tpl-meta-idle {
+  display: none;
+}
+.tpl-card.active .tpl-meta-on {
+  display: inline;
+  color: var(--brand-soft-fg);
+}
 .tpl-card.active {
   border-color: var(--brand-500);
   background: var(--brand-soft-bg);

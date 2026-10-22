@@ -21,6 +21,8 @@ let appConfig = {
 };
 
 let currentTab = 'form'; // 'form' | 'mine'
+// 当前生效的一键填入模板，用于「再点一次取消」；null 表示没有用模板
+let activeTemplate = null;
 let myPhone = localStorage.getItem('bx_reporter_phone') || '';
 let uploadedPhotos = [];
 let myTickets = [];
@@ -49,8 +51,31 @@ async function init() {
 
   switchTab(currentTab);
 
-  if (qBldg && document.getElementById('f_bldg')) document.getElementById('f_bldg').value = qBldg;
-  if (qRoom && document.getElementById('f_room')) document.getElementById('f_room').value = qRoom;
+  applyQrPlace(qBldg, qRoom);
+}
+
+/**
+ * 二维码带入地点。
+ * 只带入「楼栋 + 房间」两项，不碰故障信息——卡片副标题必须和这个行为一致。
+ * 楼栋不在当前字典里时不静默失败：明确提示手动选择。
+ */
+function applyQrPlace(bldg, room) {
+  if (!bldg && !room) return;
+
+  const sel = document.getElementById('f_bldg');
+  const roomEl = document.getElementById('f_room');
+  const known = Boolean(sel) && Array.from(sel.options).some((o) => o.value === bldg);
+
+  if (sel && known) sel.value = bldg;
+  if (roomEl && room) roomEl.value = room;
+
+  const host = document.getElementById('qrHintHost');
+  if (!host) return;
+  const place = [bldg, room].filter(Boolean).map(escapeHtml).join(' · ');
+
+  host.innerHTML = known
+    ? `<div class="alert alert-ok mb-12">${icon('mapPin', 16)}<div>已按扫码位置带入：<strong>${place}</strong>，可再修改。</div></div>`
+    : `<div class="alert alert-warn mb-12">${icon('alert', 16)}<div><strong>扫码楼栋「${escapeHtml(bldg)}」不在当前可选楼栋中</strong>，请手动选择；${room ? `房间已带入「${escapeHtml(room)}」。` : ''}</div></div>`;
 }
 
 // ----------------- 骨架布局 -----------------
@@ -126,8 +151,9 @@ function renderFormView() {
       <section class="card">
         <div class="card-head">
           <div class="card-title"><span class="step-index">1</span>报修位置</div>
-          <span class="card-sub">扫码报修将自动带入</span>
+          <span class="card-sub">扫码自动带入楼栋与房间</span>
         </div>
+        <div id="qrHintHost"></div>
         <div class="grid-form">
           <div class="field">
             <label class="label" for="f_bldg"><span class="req">*</span>报修楼栋</label>
@@ -158,7 +184,10 @@ function renderFormView() {
                       <span class="tpl-card-name">${escapeHtml(t.name)}</span>
                       <span class="tpl-chk" aria-hidden="true">${icon('check', 15)}</span>
                     </span>
-                    <span class="tpl-card-meta">${escapeHtml(t.cat)} · 历史 ${t.hits} 次</span>
+                    <span class="tpl-card-meta">
+                      <span class="tpl-meta-idle">${escapeHtml(t.cat)} · 历史 ${t.hits} 次</span>
+                      <span class="tpl-meta-on">已填入 · 再点一次取消</span>
+                    </span>
                   </button>`)
                 .join('')}
             </div>
@@ -322,12 +351,44 @@ function resetRepairForm() {
   clearTemplateSelection();
 }
 
-/** 清除模板选中态（表单上的卡片 + 弹窗里的 chips） */
+/** 只清除模板选中态（不动表单内容） */
 function clearTemplateSelection() {
+  activeTemplate = null;
   document.querySelectorAll('.tpl-card, .tpl-chip').forEach((c) => {
     c.classList.remove('active');
     if (c.classList.contains('tpl-card')) c.setAttribute('aria-pressed', 'false');
   });
+}
+
+/**
+ * 取消一键填入：撤销模板带来的三项内容。
+ * 原则是「只撤销用户没动过的」——
+ * 描述若已被改就保留，类别/紧急度若已被手动改过也不动。
+ */
+function cancelTemplate() {
+  const prev = activeTemplate;
+  if (!prev) return;
+
+  const descEl = document.getElementById('f_desc');
+  if (descEl && descEl.value.trim() === prev.desc) {
+    descEl.value = '';
+    touched.delete('f_desc');
+    clearFieldError('f_desc');
+  }
+
+  const catBox = document.getElementById('f_cat_chips');
+  if (catBox && catBox.querySelector('.chip.active')?.dataset.val === prev.cat) {
+    setChipGroupValue(catBox, appConfig.categories[0]);
+  }
+
+  const urgBox = document.getElementById('f_urg_chips');
+  if (urgBox && urgBox.querySelector('.chip.active')?.dataset.val === prev.urgency) {
+    setChipGroupValue(urgBox, '普通');
+  }
+
+  clearTemplateSelection();
+  scheduleDraftSave();
+  toast(`已取消填入「${prev.name}」`);
 }
 
 /** 把草稿回填到表单 */
@@ -640,11 +701,17 @@ function bindFormEvents() {
 /**
  * 把模板回填到表单：故障类别 + 紧急程度 + 故障描述。
  * 类别/紧急程度若因后台调整字典而匹配不上，仅填描述并提示手动选择，不静默失败。
+ * 再点一次同一个模板 = 取消填入，避免误点后无法撤销。
  */
 function applyTemplate(name, { closeAfter = false } = {}) {
   const tpl = REPAIR_TEMPLATES.find((t) => t.name === name);
   if (!tpl) return;
   if (closeAfter) closeModal();
+
+  if (activeTemplate && activeTemplate.name === name) {
+    cancelTemplate();
+    return;
+  }
 
   const catOk = setChipGroupValue(document.getElementById('f_cat_chips'), tpl.cat);
   const urgOk = setChipGroupValue(document.getElementById('f_urg_chips'), tpl.urgency);
@@ -663,8 +730,9 @@ function applyTemplate(name, { closeAfter = false } = {}) {
     if (c.classList.contains('tpl-card')) c.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
 
+  activeTemplate = { name: tpl.name, cat: tpl.cat, urgency: tpl.urgency, desc: tpl.desc };
   scheduleDraftSave();
-  if (catOk && urgOk) toast(`已填入「${tpl.name}」，可按需修改描述`);
+  if (catOk && urgOk) toast(`已填入「${tpl.name}」，再点一次可取消`);
   else toast(`已填入描述；「${tpl.cat}」类别请手动选择（后台字典可能已调整）`);
 }
 
@@ -771,6 +839,7 @@ function bindSubmit() {
       uploadedPhotos = [];
       clearFormDraft();
       touched.clear();
+      clearTemplateSelection();
       // 工单刚生成，本机缓存已经过期，下次进表单必须重新拉列表比对
       dupPhoneCache.delete(phone);
       dupHits = [];
