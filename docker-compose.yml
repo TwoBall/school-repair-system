@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  repair-system:
+    build: .
+    container_name: school-repair-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - ADMIN_KEY=${ADMIN_KEY:-admin888}
+      - WORKER_KEY=${WORKER_KEY:-worker888}
+      - DATA_DIR=/app/data
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      # 持久化挂载：SQLite 数据库与上传的现场照片持久保存在宿主机
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
