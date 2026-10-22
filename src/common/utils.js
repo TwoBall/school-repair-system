@@ -65,12 +65,30 @@ export function closeModal() {
 export function viewImage(url) {
   openModal(`
     <div style="text-align: center; padding: 10px;">
-      <img src="${escapeHtml(url)}" style="max-width: 100%; max-height: 75vh; border-radius: 8px; object-fit: contain;">
+      <img src="${escapeHtml(url)}" style="max-width: 100%; max-height: 75vh; border-radius: 8px; object-fit: contain; box-shadow: 0 0 20px rgba(0,0,0,0.5);">
       <div style="margin-top: 14px;">
         <button class="btn btn-sm btn-ghost" onclick="window.closeModal()">关闭大图</button>
       </div>
     </div>
   `);
+}
+
+export function copyText(text, successMsg = '已复制到剪贴板') {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast(successMsg)).catch(() => fallbackCopy(text, successMsg));
+  } else {
+    fallbackCopy(text, successMsg);
+  }
+}
+
+function fallbackCopy(text, successMsg) {
+  const input = document.createElement('textarea');
+  input.value = text;
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand('copy');
+  document.body.removeChild(input);
+  toast(successMsg);
 }
 
 export function exportToCsv(filename, headers, rows) {
@@ -87,8 +105,35 @@ export function exportToCsv(filename, headers, rows) {
   toast('已生成 CSV 导出文件！');
 }
 
+// ----------------- 深浅色模式 (Dark/Light Mode) 管理 -----------------
+export function initTheme() {
+  const saved = localStorage.getItem('bx_theme') || 'dark'; // 默认智慧后勤深色科技风
+  document.documentElement.setAttribute('data-theme', saved);
+  setTimeout(updateThemeIcon, 0);
+  return saved;
+}
+
+export function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('bx_theme', next);
+  updateThemeIcon();
+  return next;
+}
+
+export function updateThemeIcon() {
+  const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+  document.querySelectorAll('.theme-toggle-btn').forEach((btn) => {
+    btn.innerHTML = cur === 'dark' ? '☀️' : '🌙';
+    btn.title = cur === 'dark' ? '切换为日光浅色模式' : '切换为后勤指挥中心深色模式';
+  });
+}
+
 // 暴露全局便捷调用
 if (typeof window !== 'undefined') {
   window.closeModal = closeModal;
   window.viewImage = viewImage;
+  window.toggleTheme = toggleTheme;
+  window.copyText = copyText;
 }
