@@ -1,0 +1,14 @@
+name = "school-repair-system"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "public"
+
+# Cloudflare D1 数据库绑定（在 Cloudflare 控制台新建 D1 数据库并绑定为 DB 即可）
+[[d1_databases]]
+binding = "DB"
+database_name = "school-repair-db"
+database_id = "your-database-id-here"
+
+# 可选：Cloudflare R2 存储桶绑定（存图片用，若未配置则自动以 base64 存入 D1）
+# [[r2_buckets]]
+# binding = "PHOTOS"
+# bucket_name = "school-repair-photos"
