@@ -1907,80 +1907,90 @@ textarea.control {
 /* ------------------------------ 17. 打印 ------------------------------ */
 .print-sheet { display: none; }
 
+@page {
+  size: A4 portrait;
+  margin: 12mm 14mm;
+}
+
 @media print {
-  body {
-    background: #fff;
-    color: #000;
-    padding-bottom: 0;
-  }
-  .topbar, .tabbar, .btn, .no-print, .modal-footer, .ticket-actions {
-    display: none !important;
-  }
-  .modal-overlay {
-    position: static;
-    background: none;
+  html, body {
+    background: #fff !important;
+    color: #000 !important;
+    margin: 0;
     padding: 0;
-    display: block;
-    overflow: visible;
   }
-  .modal-content {
-    max-width: 100%;
-    box-shadow: none;
-    border: 0;
-    max-height: none;
-    animation: none;
-  }
-  .card, .ticket-card, .tbl-wrap {
-    box-shadow: none;
-    break-inside: avoid;
+  /* 白名单式：打印瞬间 body 下只保留 .print-sheet（打印后即被移除），
+     其余界面元素一律不进打印流。旧的黑名单式隐藏会漏掉调度大池的
+     搜索表单、筛选 chips、工单卡片与表格，导致整页都被打印。 */
+  body > *:not(.print-sheet) {
+    display: none !important;
   }
   .print-sheet {
     display: block !important;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.7;
     color: #000;
   }
   .print-head {
     text-align: center;
     border-bottom: 2px solid #000;
-    padding-bottom: 8px;
-    margin-bottom: 14px;
+    padding-bottom: 10px;
+    margin-bottom: 16px;
   }
   .print-head h2 {
     margin: 0;
-    font-size: 22px;
+    font-size: 21px;
+    letter-spacing: 1px;
   }
   .print-head .print-sub {
     font-size: 12px;
-    margin-top: 4px;
+    margin-top: 6px;
   }
   .print-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 13.5px;
+    table-layout: fixed; /* 锁定列宽比例，内容再长也不挤压标签列 */
+    font-size: 13px;
   }
+  .print-table th,
   .print-table td {
-    padding: 8px;
     border: 1px solid #333;
+    padding: 8px 10px;
     vertical-align: top;
+    overflow-wrap: break-word;
   }
   .print-table th {
-    width: 15%;
+    width: 17%;
     background: #f2f2f2 !important;
-    font-weight: bold;
+    -webkit-print-color-adjust: exact; /* 浏览器默认不打印背景色，显式要求保留 */
+    print-color-adjust: exact;
+    font-weight: 700;
     white-space: nowrap;
   }
   .print-table .cell-wide {
-    width: 35%;
+    width: 33%;
   }
   .print-table .tall-60 { min-height: 60px; }
   .print-table .tall-80 { min-height: 80px; }
+  /* 签名区：三栏均分 + 独立签名线，替代挤在一行的三段下划线 */
   .print-sign {
     display: flex;
-    justify-content: space-between;
-    margin-top: 36px;
-    padding: 0 20px;
-    font-size: 14px;
+    gap: 36px;
+    margin-top: 64px;
+  }
+  .print-sign .sign-item {
+    flex: 1;
+    text-align: center;
+  }
+  .print-sign .sign-line {
+    display: block;
+    height: 42px;
+    border-bottom: 1px solid #000;
+  }
+  .print-sign .sign-cap {
+    display: block;
+    margin-top: 6px;
+    font-size: 12px;
   }
 }
 

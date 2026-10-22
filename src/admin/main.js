@@ -645,9 +645,9 @@ const printTicket = async (id) => {
       </tr>
     </table>
     <div class="print-sign">
-      <div>报修人验收签名：________________</div>
-      <div>维修师傅签名：________________</div>
-      <div>总务处审核盖章：________________</div>
+      <div class="sign-item"><span class="sign-line"></span><span class="sign-cap">报修人验收签名</span></div>
+      <div class="sign-item"><span class="sign-line"></span><span class="sign-cap">维修师傅签名</span></div>
+      <div class="sign-item"><span class="sign-line"></span><span class="sign-cap">总务处审核盖章</span></div>
     </div>
   `;
   document.body.appendChild(printDiv);
