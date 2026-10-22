@@ -399,6 +399,16 @@ const openFinishModal = (id) => {
         <label class="label" for="finishResultInput"><span class="req">*</span>维修处理结果说明</label>
         <textarea class="control" id="finishResultInput" placeholder="例如：已更换日光灯管及启辉器，现场通电测试正常"></textarea>
       </div>
+      <div class="grid-form">
+        <div class="field">
+          <label class="label" for="finishMaterialInput">维修耗材 / 配件<span class="opt">选填</span></label>
+          <textarea class="control" id="finishMaterialInput" rows="2" placeholder="例如：4分水管接头 2 个、生料带 1 卷"></textarea>
+        </div>
+        <div class="field">
+          <label class="label" for="finishMaterialSourceInput">配件购方 / 耗材来源<span class="opt">选填</span></label>
+          <input class="control" type="text" id="finishMaterialSourceInput" placeholder="例如：物业部备用 / 学校采购 / 供应商保修" autocomplete="off">
+        </div>
+      </div>
       <div class="field">
         <span class="label">完工现场照片<span class="opt">最多 3 张</span></span>
         <div class="photos-grid" id="finishPhotosBox"></div>
@@ -421,12 +431,14 @@ const openFinishModal = (id) => {
       return;
     }
     input.classList.remove('invalid');
+    const material = document.getElementById('finishMaterialInput').value.trim();
+    const materialSource = document.getElementById('finishMaterialSourceInput').value.trim();
     const btn = document.getElementById('btnSubmitFinish');
     await runAction(btn, '正在提交…', async () => {
       await request(`/api/tickets/${id}/finish`, {
         method: 'POST',
         token: workerToken,
-        body: { result, photos: finishPhotos },
+        body: { result, material, materialSource, photos: finishPhotos },
       });
       toast('完工提交成功，已通知报修人验收');
       closeModal();
@@ -502,6 +514,17 @@ const openWorkerDetail = async (id) => {
           </div>
           ${photosHtml}
         </div>
+        ${t.result
+          ? `<div class="alert alert-ok mt-12 col gap-4 start">
+              ${icon('checkCircle', 16)}
+              <div>
+                <strong>我的完工记录</strong>
+                <div class="mt-4">${escapeHtml(t.result)}</div>
+                ${(t.material || t.materialSource) ? `<div class="mt-4">${icon('receipt', 13)} <strong>耗材/配件</strong>：${escapeHtml(t.material || '未填写')} ｜ <strong>配件购方</strong>：${escapeHtml(t.materialSource || '未填写')}</div>` : ''}
+                ${t.finishPhotos && t.finishPhotos.length > 0 ? `<div class="photos-grid">${t.finishPhotos.map((p, i) => `<div class="photo-item"><img src="${escapeHtml(p)}" alt="完工照片 ${i + 1}" data-act="view-photo" data-src="${escapeHtml(p)}" role="button" tabindex="0"></div>`).join('')}</div>` : ''}
+              </div>
+            </div>`
+          : ''}
         ${commentsHtml}
       </div>
       <div class="modal-footer">

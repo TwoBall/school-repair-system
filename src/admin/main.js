@@ -509,6 +509,7 @@ const openAdminDetail = async (id) => {
           <div>
             <strong>维修结果</strong>
             <div class="mt-4">${escapeHtml(t.result)}</div>
+            ${(t.material || t.materialSource) ? `<div class="mt-4">${icon('receipt', 13)} <strong>耗材/配件</strong>：${escapeHtml(t.material || '未填写')} ｜ <strong>配件购方</strong>：${escapeHtml(t.materialSource || '未填写')}</div>` : ''}
             ${t.finishPhotos && t.finishPhotos.length > 0 ? `<div class="photos-grid">${t.finishPhotos.map((p, i) => `<div class="photo-item"><img src="${escapeHtml(p)}" alt="完工照片 ${i + 1}" data-act="view-photo" data-src="${escapeHtml(p)}" role="button" tabindex="0"></div>`).join('')}</div>` : ''}
           </div>
         </div>`
@@ -611,6 +612,14 @@ const printTicket = async (id) => {
   const t = await request(`/api/tickets/${id}`, { token: adminToken });
   const st = STATUS_MAP[t.status] || { label: t.status };
 
+  // 耗材信息仅在师傅已登记时出现，派工单保持干净，完工后自动成为存档记录
+  const materialRowHtml = (t.material || t.materialSource)
+    ? `<tr>
+        <th>耗材 / 配件</th><td class="cell-wide">${escapeHtml(t.material || '无')}</td>
+        <th>配件购方</th><td class="cell-wide">${escapeHtml(t.materialSource || '无')}</td>
+      </tr>`
+    : '';
+
   const printDiv = document.createElement('div');
   printDiv.className = 'print-sheet';
   printDiv.innerHTML = `
@@ -643,6 +652,7 @@ const printTicket = async (id) => {
         <th class="th-wrap">维修记录及耗材说明</th>
         <td colspan="3" class="tall-80">${escapeHtml(t.result || '现场排查中...')}</td>
       </tr>
+      ${materialRowHtml}
     </table>
     <div class="print-sign">
       <div class="sign-item"><span class="sign-line"></span><span class="sign-cap">报修人验收签名</span></div>
@@ -662,7 +672,7 @@ function handleExportCsv() {
     toast('当前列表无工单可导出');
     return;
   }
-  const headers = ['工单编号', '报修时间', '楼栋', '房间', '类别', '紧急度', '报修人', '电话', '身份', '状态', '师傅', '描述', '结果', '超时情况', '评分', '评价内容'];
+  const headers = ['工单编号', '报修时间', '楼栋', '房间', '类别', '紧急度', '报修人', '电话', '身份', '状态', '师傅', '描述', '结果', '耗材/配件', '配件购方', '超时情况', '评分', '评价内容'];
   const rows = allTickets.map((t) => [
     t.id,
     formatTime(t.createdAt),
@@ -677,6 +687,8 @@ function handleExportCsv() {
     t.assignee || '',
     (t.desc || '').replace(/[\r\n]+/g, ' '),
     (t.result || '').replace(/[\r\n]+/g, ' '),
+    (t.material || '').replace(/[\r\n]+/g, ' '),
+    (t.materialSource || '').replace(/[\r\n]+/g, ' '),
     t.isTimeout ? t.timeoutReason : '正常',
     t.rating?.score || '',
     (t.rating?.comment || '').replace(/[\r\n]+/g, ' '),

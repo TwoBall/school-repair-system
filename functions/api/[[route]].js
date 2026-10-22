@@ -29,24 +29,71 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS workers (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT NOT NULL, skill TEXT, phone TEXT, active INTEGER DEFAULT 1, createdAt INTEGER);
 CREATE TABLE IF NOT EXISTS buildings (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, sortOrder INTEGER DEFAULT 0, active INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, sortOrder INTEGER DEFAULT 0, active INTEGER DEFAULT 1);
-CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, day TEXT, createdAt INTEGER, building TEXT, room TEXT, category TEXT, urgency TEXT, desc TEXT, reporter TEXT, phone TEXT, identity TEXT, photos TEXT, status TEXT, assignee TEXT, timeline TEXT, rating TEXT, completedAt INTEGER, closedAt INTEGER, result TEXT, finishPhotos TEXT, lastRemindAt INTEGER DEFAULT 0, remindCount INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, day TEXT, createdAt INTEGER, building TEXT, room TEXT, category TEXT, urgency TEXT, desc TEXT, reporter TEXT, phone TEXT, identity TEXT, photos TEXT, status TEXT, assignee TEXT, timeline TEXT, rating TEXT, completedAt INTEGER, closedAt INTEGER, result TEXT, material TEXT, materialSource TEXT, finishPhotos TEXT, lastRemindAt INTEGER DEFAULT 0, remindCount INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS ticket_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, ticketId TEXT NOT NULL, senderRole TEXT NOT NULL, senderName TEXT NOT NULL, content TEXT NOT NULL, createdAt INTEGER NOT NULL);
 `;
+
+// 真实楼栋字典（编号 + 用途）。A=教学楼 / B=实训楼 / C=宿舍 / D=行政区
+const DEFAULT_BUILDINGS = [
+  'A1 教学楼', 'A2 教学楼', 'A3 教学楼', 'A4 教学楼',
+  'B1 实训楼', 'B2 实训楼',
+  'C1 学生宿舍', 'C2 学生宿舍', 'C3 学生宿舍', 'C4 学生宿舍',
+  'C5 学生宿舍', 'C6 学生宿舍', 'C7 教师宿舍', 'C8 学生宿舍',
+  'D区 行政办公楼', '室外公共区域',
+];
+// 迁移前的内置旧字典：仅当字典仍是这一套时才允许被真实字典替换
+const LEGACY_BUILDINGS = [
+  '教学楼A栋', '教学楼B栋', '教学楼C栋', '实验楼', '图书馆', '行政楼',
+  '食堂', '体育馆', '学生公寓1栋', '学生公寓2栋', '学生公寓3栋', '学生公寓4栋', '教师公寓',
+];
 
 let schemaChecked = false;
 async function ensureSchema(db) {
   if (schemaChecked) return;
   try {
     await db.exec(INIT_SQL);
+    await migrateTicketColumns(db);
     // 检查是否有数据，若没有则插入默认种子数据
     const countRes = await db.prepare('SELECT count(*) as c FROM workers').first();
     if (!countRes || countRes.c === 0) {
       await seedDefaults(db);
     }
+    await migrateBuildingDict(db);
     schemaChecked = true;
   } catch (e) {
     console.error('ensureSchema error:', e);
   }
+}
+
+// 老库补列：CREATE TABLE IF NOT EXISTS 不会给已存在的表加字段
+async function migrateTicketColumns(db) {
+  for (const col of ['material', 'materialSource']) {
+    try {
+      await db.prepare(`ALTER TABLE tickets ADD COLUMN ${col} TEXT`).run();
+    } catch (e) {
+      // 列已存在时忽略
+    }
+  }
+}
+
+// 楼栋字典迁移到真实编号；用户已自行改过字典时不覆盖
+async function migrateBuildingDict(db) {
+  const ver = await db.prepare("SELECT value FROM settings WHERE key = 'dict_buildings_v'").first();
+  if (ver && ver.value === '2') return;
+
+  const cur = (await db.prepare('SELECT name FROM buildings').all()).results || [];
+  const names = cur.map((r) => r.name);
+  const untouched = names.length === 0 || names.every((n) => LEGACY_BUILDINGS.includes(n));
+
+  if (untouched) {
+    await db.prepare('DELETE FROM buildings').run();
+    const stmts = DEFAULT_BUILDINGS.map((b, i) =>
+      db.prepare('INSERT INTO buildings (name, sortOrder, active) VALUES (?, ?, 1)').bind(b, i + 1)
+    );
+    await db.batch(stmts);
+  }
+
+  await db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dict_buildings_v', '2')").run();
 }
 
 async function seedDefaults(db) {
@@ -74,9 +121,8 @@ async function seedDefaults(db) {
     stmts.push(db.prepare('INSERT INTO workers (id, username, password, name, skill, phone, active, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(...w));
   }
 
-  // 默认楼栋
-  const buildings = ['教学楼A栋', '教学楼B栋', '教学楼C栋', '实验楼', '图书馆', '行政楼', '食堂', '体育馆', '学生公寓1栋', '学生公寓2栋', '学生公寓3栋', '学生公寓4栋', '教师公寓'];
-  buildings.forEach((b, i) => {
+  // 默认楼栋（真实编号）
+  DEFAULT_BUILDINGS.forEach((b, i) => {
     stmts.push(db.prepare('INSERT INTO buildings (name, sortOrder, active) VALUES (?, ?, 1)').bind(b, i + 1));
   });
 
@@ -216,6 +262,8 @@ function formatTicket(t, settings = {}) {
     timeline,
     rating,
     finishPhotos,
+    material: t.material || '',
+    materialSource: t.materialSource || '',
     isTimeout,
     timeoutReason,
   };
@@ -245,7 +293,7 @@ async function sendWebhook(settings, eventType, data) {
       text = `### ⚠️【加急催单】报修人正在催单！\n\n- **工单编号**：${data.id}\n- **报修地点**：${data.building} ${data.room}\n- **报修人**：${data.reporter} 📱 ${data.phone}\n- **负责人**：${data.assignee || '未派工'}\n- **说明**：${data.note || '急需处理'}\n- **累计催单**：${data.remindCount || 1} 次`;
     } else if (eventType === 'ticket_finish') {
       title = `✅ 维修已完工【待验收】`;
-      text = `### ✅ 维修已完工，等待验收\n\n- **工单编号**：${data.id}\n- **地点**：${data.building} ${data.room}\n- **维修人员**：${data.assignee}\n- **处理结果**：${data.result}\n- **完工时间**：${timeStr}`;
+      text = `### ✅ 维修已完工，等待验收\n\n- **工单编号**：${data.id}\n- **地点**：${data.building} ${data.room}\n- **维修人员**：${data.assignee}\n- **处理结果**：${data.result}\n- **耗材/配件**：${data.material || '无'}\n- **配件购方**：${data.materialSource || '无'}\n- **完工时间**：${timeStr}`;
     } else if (eventType === 'ticket_rate') {
       title = `⭐ 报修已评价结单`;
       text = `### ⭐ 报修工单已验收结单\n\n- **工单编号**：${data.id}\n- **评价得分**：${'⭐'.repeat(data.score || 5)} (${data.score}分)\n- **评价反馈**：${data.comment || '满意'}`;
@@ -546,10 +594,15 @@ export async function onRequest(context) {
       let tl = [];
       try { tl = JSON.parse(t.timeline || '[]'); } catch (e) {}
       const now = Date.now();
-      tl.push({ t: now, by: t.assignee || '维修师傅', action: '维修完成，等待验收', note: body.result });
+      const material = typeof body.material === 'string' ? body.material.trim() : '';
+      const materialSource = typeof body.materialSource === 'string' ? body.materialSource.trim() : '';
+      const noteParts = [body.result];
+      if (material) noteParts.push(`耗材/配件：${material}`);
+      if (materialSource) noteParts.push(`配件购方：${materialSource}`);
+      tl.push({ t: now, by: t.assignee || '维修师傅', action: '维修完成，等待验收', note: noteParts.filter(Boolean).join('；') });
 
-      await db.prepare('UPDATE tickets SET status = ?, completedAt = ?, result = ?, finishPhotos = ?, timeline = ? WHERE id = ?')
-        .bind('done', now, body.result, JSON.stringify(body.photos || []), JSON.stringify(tl), id).run();
+      await db.prepare('UPDATE tickets SET status = ?, completedAt = ?, result = ?, material = ?, materialSource = ?, finishPhotos = ?, timeline = ? WHERE id = ?')
+        .bind('done', now, body.result, material, materialSource, JSON.stringify(body.photos || []), JSON.stringify(tl), id).run();
 
       const updated = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
