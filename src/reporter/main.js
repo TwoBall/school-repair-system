@@ -4,8 +4,9 @@
  */
 import '../common/style.css';
 import { request, fetchConfig, STATUS_MAP } from '../common/api.js';
-import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, confirmDialog, promptDialog, uploadPhoto, runAction, uploadingTile, updateUploadTile, delegateActions, createPoller, relTimeFrom, bindChipRadioGroup } from '../common/utils.js';
+import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, confirmDialog, promptDialog, uploadPhoto, runAction, uploadingTile, updateUploadTile, delegateActions, createPoller, relTimeFrom, bindChipRadioGroup, setChipGroupValue } from '../common/utils.js';
 import { icon, categoryIcon, stars, themeToggleBtn, bindThemeToggle } from '../common/icons.js';
+import { REPAIR_TEMPLATES, QUICK_TEMPLATE_COUNT } from '../common/templates.js';
 
 let appConfig = {
   schoolName: '学校总务报修服务中心',
@@ -138,6 +139,15 @@ function renderFormView() {
       <section class="card">
         <div class="card-head">
           <div class="card-title"><span class="step-index">2</span>故障信息</div>
+        </div>
+        <div class="field">
+          <span class="label" id="f_tpl_label">常见故障一键填入<span class="opt">点一下自动填好类别与描述，可再修改</span></span>
+          <div class="chips-group" id="f_tpl_chips" role="group" aria-labelledby="f_tpl_label">
+            ${REPAIR_TEMPLATES.slice(0, QUICK_TEMPLATE_COUNT)
+              .map((t) => `<span class="chip tpl-chip" data-act="use-tpl" data-val="${escapeHtml(t.name)}" role="button" tabindex="0">${icon('zap', 14)}${escapeHtml(t.name)}</span>`)
+              .join('')}
+            <span class="chip tpl-chip tpl-more" data-act="more-tpl" role="button" tabindex="0">${icon('clipboard', 14)}更多常见故障</span>
+          </div>
         </div>
         <div class="field">
           <span class="label" id="f_cat_label"><span class="req">*</span>故障类别</span>
@@ -291,6 +301,7 @@ function resetRepairForm() {
   dupHits = [];
   dupDismissed = false;
   paintDupBar();
+  document.querySelectorAll('.tpl-chip').forEach((c) => c.classList.remove('active'));
 }
 
 /** 把草稿回填到表单 */
@@ -597,6 +608,63 @@ function bindFormEvents() {
   bindPhotoInput();
   bindSubmit();
   runDupCheck(); // 草稿回填后可能已经构成重复，进入即查一次
+}
+
+// ----------------- 常见故障一键填入 -----------------
+/**
+ * 把模板回填到表单：故障类别 + 紧急程度 + 故障描述。
+ * 类别/紧急程度若因后台调整字典而匹配不上，仅填描述并提示手动选择，不静默失败。
+ */
+function applyTemplate(name, { closeAfter = false } = {}) {
+  const tpl = REPAIR_TEMPLATES.find((t) => t.name === name);
+  if (!tpl) return;
+  if (closeAfter) closeModal();
+
+  const catOk = setChipGroupValue(document.getElementById('f_cat_chips'), tpl.cat);
+  const urgOk = setChipGroupValue(document.getElementById('f_urg_chips'), tpl.urgency);
+
+  const descEl = document.getElementById('f_desc');
+  if (descEl) {
+    descEl.value = tpl.desc;
+    touched.add('f_desc');
+    validateField('f_desc');
+  }
+
+  // 高亮当前使用的模板（表单上的快捷区与弹窗里各有一份）
+  document.querySelectorAll('.tpl-chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.val === name);
+  });
+
+  scheduleDraftSave();
+  if (catOk && urgOk) toast(`已填入「${tpl.name}」，可按需修改描述`);
+  else toast(`已填入描述；「${tpl.cat}」类别请手动选择（后台字典可能已调整）`);
+}
+
+/** 全部常见任务，按故障类别分组展示 */
+function openTemplatePicker() {
+  const groups = new Map();
+  REPAIR_TEMPLATES.forEach((t) => {
+    if (!groups.has(t.cat)) groups.set(t.cat, []);
+    groups.get(t.cat).push(t);
+  });
+  const body = [...groups.entries()].map(([cat, list]) => `
+      <div class="tpl-pick-group">
+        <div class="tpl-pick-cat">${categoryIcon(cat, 14)}${escapeHtml(cat)}</div>
+        <div class="chips-group">
+          ${list.map((t) => `<span class="chip tpl-chip" data-act="pick-tpl" data-val="${escapeHtml(t.name)}" role="button" tabindex="0">${escapeHtml(t.name)}<span class="tpl-hits">${t.hits}</span></span>`).join('')}
+        </div>
+      </div>`).join('');
+
+  openModal(`
+    <div class="modal-header">
+      <h3>${icon('clipboard', 18)}常见报修任务</h3>
+      <button class="modal-close-btn" type="button" data-act="modal-close" aria-label="关闭">${icon('close', 16)}</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint mb-12">${icon('info', 13)}按集团历史报修工单统计排序，数字为历史出现次数；点击即填入表单。</p>
+      ${body}
+    </div>
+  `);
 }
 
 function bindPhotoInput() {
@@ -1073,6 +1141,9 @@ delegateActions({
     dupDismissed = true;
     paintDupBar();
   },
+  'use-tpl': ({ val }) => applyTemplate(val),
+  'more-tpl': () => openTemplatePicker(),
+  'pick-tpl': ({ val }) => applyTemplate(val, { closeAfter: true }),
 });
 
 init();

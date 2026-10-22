@@ -584,13 +584,16 @@ export function bindChipRadioGroup(box, { valueKey = 'val', label, labelId, onCh
     });
   };
 
-  const select = (chip) => {
+  const select = (chip, { focus = true } = {}) => {
     if (!chip) return;
     chips().forEach((c) => c.classList.toggle('active', c === chip));
     paint();
-    chip.focus();
+    if (focus) chip.focus();
     if (onChange) onChange(chip.dataset[valueKey], chip);
   };
+
+  // 暴露给外部按值选中（如一键模板回填），避免调用方自己操作 class 破坏 aria 状态
+  box.__chipApi = { paint, select, valueKey };
 
   box.onclick = (e) => {
     const chip = e.target.closest('.chip');
@@ -613,4 +616,21 @@ export function bindChipRadioGroup(box, { valueKey = 'val', label, labelId, onCh
   };
 
   paint();
+}
+
+/**
+ * 按值选中 chips 单选组中的一项（一键模板回填用）。
+ * @param {HTMLElement} box 已 bindChipRadioGroup 的容器
+ * @param {string} value data-<valueKey> 的取值
+ * @param {object} [opts] { focus = false } 是否把焦点移到该项（回填场景默认不抢焦点）
+ * @returns {boolean} 是否命中并选中
+ */
+export function setChipGroupValue(box, value, { focus = false } = {}) {
+  const api = box && box.__chipApi;
+  if (!api) return false;
+  const chip = Array.from(box.querySelectorAll('.chip'))
+    .find((c) => c.dataset[api.valueKey] === value);
+  if (!chip) return false;
+  api.select(chip, { focus });
+  return true;
 }

@@ -2000,6 +2000,40 @@ textarea.control {
   }
 }
 
+/* 常见故障一键填入：快捷 chips 与「更多」入口区分于普通筛选 chips */
+.tpl-chip {
+  cursor: pointer;
+  font-size: 13px;
+}
+.tpl-chip.active {
+  border-color: var(--brand);
+  background: var(--brand-soft-bg);
+  color: var(--brand-soft-fg);
+}
+.tpl-more {
+  border-style: dashed;
+}
+.tpl-hits {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.16);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+.tpl-pick-group + .tpl-pick-group {
+  margin-top: 16px;
+}
+.tpl-pick-cat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 /* ------------------------- 17.5 主题切换过渡动画 ------------------------- */
 /* 切换瞬间由 JS 挂 .theme-anim 到 <html>，几百毫秒后自动摘除。
    全局常驻 transition 会拖累渲染，所以只在切换窗口内生效。
