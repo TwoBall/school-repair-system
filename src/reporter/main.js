@@ -1,10 +1,11 @@
 /**
  * 师生在线报修专区 - 前端主逻辑
- * 升级：智慧后勤大屏科技质感 + 深浅色切换 + 常见故障一键模板 + 顺丰级沉浸式流转时间轴
+ * 升级：纯矢量 SVG 现代图标 + 渐变波浪骨架屏 + 科技指挥中心质感 + 常见故障一键模板 + 顺丰级时间轴
  */
 import '../common/style.css';
+import { Icons } from '../common/icons.js';
 import { request, uploadImage, fetchConfig, STATUS_MAP } from '../common/api.js';
-import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, initTheme, copyText } from '../common/utils.js';
+import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, initTheme, copyText, renderTicketSkeleton } from '../common/utils.js';
 
 let appConfig = {
   schoolName: '学校总务报修服务中心',
@@ -12,14 +13,14 @@ let appConfig = {
   categories: ['水电照明', '门窗家具', '空调风扇', '给排水/卫浴', '多媒体设备', '墙面地面', '电梯设施', '其他'],
 };
 
-// 常见故障智能快捷预设 (一键带入场景)
+// 常见故障智能快捷预设 (纯矢量 SVG 图标)
 const PRESETS = [
-  { icon: '🚰', title: '水龙头漏水', cat: '给排水/卫浴', urg: '普通', desc: '水龙头松动或关不紧，持续滴漏水，需要检修或更换阀芯。' },
-  { icon: '💡', title: '教室灯管不亮', cat: '水电照明', urg: '普通', desc: '室内日光灯闪烁或彻底不亮，疑似灯管损坏或镇流器故障。' },
-  { icon: '❄️', title: '空调不冷/漏水', cat: '空调风扇', urg: '较急', desc: '开机运行无冷风/制冷效果差，空调内机有滴水现象。' },
-  { icon: '🖥️', title: '多媒体投影黑屏', cat: '多媒体设备', urg: '较急', desc: '教学多媒体设备无法开机或投影仪无信号输入，急需排查。' },
-  { icon: '🚪', title: '门锁门窗损坏', cat: '门窗家具', urg: '普通', desc: '门锁锁舌卡滞损坏，无法正常锁门或合页脱落。' },
-  { icon: '🚽', title: '厕所下水堵塞', cat: '给排水/卫浴', urg: '紧急', desc: '下水道返水堵塞排污不畅，现场有异味，需紧急疏通排障。' },
+  { icon: Icons.water(18, 'preset-icon'), title: '水龙头漏水', cat: '给排水/卫浴', urg: '普通', desc: '水龙头松动或关不紧，持续滴漏水，需要检修或更换阀芯。' },
+  { icon: Icons.lightbulb(18, 'preset-icon'), title: '教室灯管不亮', cat: '水电照明', urg: '普通', desc: '室内日光灯闪烁或彻底不亮，疑似灯管损坏或镇流器故障。' },
+  { icon: Icons.snowflake(18, 'preset-icon'), title: '空调不冷/漏水', cat: '空调风扇', urg: '较急', desc: '开机运行无冷风/制冷效果差，空调内机有滴水现象。' },
+  { icon: Icons.monitor(18, 'preset-icon'), title: '多媒体投影黑屏', cat: '多媒体设备', urg: '较急', desc: '教学多媒体设备无法开机或投影仪无信号输入，急需排查。' },
+  { icon: Icons.doorLock(18, 'preset-icon'), title: '门锁门窗损坏', cat: '门窗家具', urg: '普通', desc: '门锁锁舌卡滞损坏，无法正常锁门或合页脱落。' },
+  { icon: Icons.toiletPipe(18, 'preset-icon'), title: '厕所下水堵塞', cat: '给排水/卫浴', urg: '紧急', desc: '下水道返水堵塞排污不畅，现场有异味，需紧急疏通排障。' },
 ];
 
 let currentTab = 'form'; // 'form' | 'mine'
@@ -55,14 +56,14 @@ function renderLayout() {
     <header class="topbar">
       <div class="nav-wrap">
         <div class="brand">
-          <span style="font-size: 22px;">🏫</span>
+          <span style="color: var(--cyan);">${Icons.school(24)}</span>
           <div>
             <div class="title" id="portalSchoolName">学校总务报修系统</div>
           </div>
         </div>
         <div class="topbar-actions">
           <div class="portal-tag">师生报修专区</div>
-          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题">☀️</button>
+          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题"></button>
         </div>
       </div>
     </header>
@@ -71,11 +72,11 @@ function renderLayout() {
 
     <nav class="tabbar">
       <button class="tabbar-item active" id="tabFormBtn">
-        <span class="icon">✏️</span>
+        <span class="icon">${Icons.edit(20)}</span>
         <span>在线报修</span>
       </button>
       <button class="tabbar-item" id="tabMineBtn">
-        <span class="icon">📋</span>
+        <span class="icon">${Icons.clipboard(20)}</span>
         <span>我的报修</span>
       </button>
     </nav>
@@ -110,7 +111,7 @@ function renderFormView() {
 
   const presetsHtml = PRESETS.map((p, idx) => `
     <div class="preset-tile" data-idx="${idx}">
-      <span>${p.icon}</span>
+      <span style="color: var(--cyan);">${p.icon}</span>
       <span>${escapeHtml(p.title)}</span>
     </div>
   `).join('');
@@ -118,13 +119,19 @@ function renderFormView() {
   return `
     <div class="card">
       <div class="card-title">
-        <span>📝 填写报修单</span>
+        <span style="display: flex; align-items: center; gap: 6px;">
+          ${Icons.edit(18, 'text-cyan')}
+          <span>填写报修单</span>
+        </span>
         <span class="text-muted">免注册 · 实时流转可查</span>
       </div>
 
-      <!-- 快捷故障一键填单模板 (UX 升级) -->
+      <!-- 快捷故障一键填单模板 -->
       <div class="presets-wrap">
-        <div class="presets-label">⚡ 常见故障一键模板（点击自动填单）：</div>
+        <div class="presets-label">
+          ${Icons.bolt(15)}
+          <span>常见故障一键模板（点击自动填单）：</span>
+        </div>
         <div class="presets-grid" id="presetsGrid">${presetsHtml}</div>
       </div>
 
@@ -162,8 +169,8 @@ function renderFormView() {
         <label>现场照片 (最多5张)</label>
         <div class="photos-grid" id="photosGrid">
           <label class="photo-upload-btn" id="uploadBtn">
-            <span style="font-size: 24px; line-height: 1;">📷</span>
-            <span>添加照片</span>
+            <span>${Icons.camera(24)}</span>
+            <span style="margin-top: 4px;">添加照片</span>
             <input type="file" id="photoFileInput" accept="image/*" style="display: none;">
           </label>
         </div>
@@ -190,13 +197,15 @@ function renderFormView() {
         </div>
       </div>
 
-      <button class="btn" id="btnSubmitTicket" style="margin-top: 10px;">⚡ 立即提交报修申请</button>
+      <button class="btn" id="btnSubmitTicket" style="margin-top: 10px;">
+        ${Icons.bolt(18)}
+        <span>立即提交报修申请</span>
+      </button>
     </div>
   `;
 }
 
 function bindFormEvents() {
-  // 单选 Chips 绑定
   ['f_cat_chips', 'f_urg_chips', 'f_who_chips'].forEach((boxId) => {
     const box = document.getElementById(boxId);
     if (box) {
@@ -209,7 +218,6 @@ function bindFormEvents() {
     }
   });
 
-  // 快捷场景预设点击绑定
   const presetsGrid = document.getElementById('presetsGrid');
   if (presetsGrid) {
     presetsGrid.onclick = (e) => {
@@ -219,23 +227,16 @@ function bindFormEvents() {
       const p = PRESETS[idx];
       if (!p) return;
 
-      // 自动选故障类别
       const catChips = document.querySelectorAll('#f_cat_chips .chip');
       catChips.forEach((c) => {
-        if (c.dataset.val === p.cat || c.innerText.trim() === p.cat) {
-          c.click();
-        }
+        if (c.dataset.val === p.cat || c.innerText.trim() === p.cat) c.click();
       });
 
-      // 自动选紧急度
       const urgChips = document.querySelectorAll('#f_urg_chips .chip');
       urgChips.forEach((c) => {
-        if (c.dataset.val === p.urg) {
-          c.click();
-        }
+        if (c.dataset.val === p.urg) c.click();
       });
 
-      // 自动填入故障描述
       const descEl = document.getElementById('f_desc');
       if (descEl) {
         descEl.value = p.desc;
@@ -246,10 +247,8 @@ function bindFormEvents() {
     };
   }
 
-  // 照片上传绑定
   renderPhotoGrid();
 
-  // 提交工单
   const btnSubmit = document.getElementById('btnSubmitTicket');
   if (btnSubmit) {
     btnSubmit.onclick = async () => {
@@ -267,25 +266,13 @@ function bindFormEvents() {
       const urgency = urgEl ? urgEl.dataset.val : '普通';
       const identity = whoEl ? whoEl.dataset.val : '教职工';
 
-      if (!room) {
-        toast('请填写具体的楼层/房间号');
-        return;
-      }
-      if (!desc) {
-        toast('请填写故障现象描述');
-        return;
-      }
-      if (!reporter) {
-        toast('请填写联系人姓名');
-        return;
-      }
-      if (!/^1\d{10}$/.test(phone)) {
-        toast('请填写正确的11位手机号码');
-        return;
-      }
+      if (!room) { toast('请填写具体的楼层/房间号'); return; }
+      if (!desc) { toast('请填写故障现象描述'); return; }
+      if (!reporter) { toast('请填写联系人姓名'); return; }
+      if (!/^1\d{10}$/.test(phone)) { toast('请填写正确的11位手机号码'); return; }
 
       btnSubmit.disabled = true;
-      btnSubmit.textContent = '正在提交...';
+      btnSubmit.innerHTML = `<span>提交中...</span>`;
 
       try {
         const created = await request('/api/tickets', {
@@ -314,7 +301,7 @@ function bindFormEvents() {
         toast(err.message || '提交失败');
       } finally {
         btnSubmit.disabled = false;
-        btnSubmit.textContent = '⚡ 立即提交报修申请';
+        btnSubmit.innerHTML = `${Icons.bolt(18)} <span>立即提交报修申请</span>`;
       }
     };
   }
@@ -332,8 +319,8 @@ function renderPhotoGrid() {
 
   const btn = uploadedPhotos.length < 5
     ? `<label class="photo-upload-btn" id="uploadBtn">
-        <span style="font-size: 24px; line-height: 1;">📷</span>
-        <span>添加照片</span>
+        <span>${Icons.camera(24)}</span>
+        <span style="margin-top: 4px;">添加照片</span>
         <input type="file" id="photoFileInput" accept="image/*" style="display: none;">
       </label>`
     : '';
@@ -363,11 +350,16 @@ window.removePhoto = (idx) => {
   renderPhotoGrid();
 };
 
-// ----------------- 我的报修查询页面 -----------------
+// ----------------- 我的报修查询页面 (带骨架屏动画) -----------------
 function renderMineView() {
   return `
     <div class="card">
-      <div class="card-title"><span>🔍 我的报修记录查询</span></div>
+      <div class="card-title">
+        <span style="display: flex; align-items: center; gap: 6px;">
+          ${Icons.clipboard(18, 'text-cyan')}
+          <span>我的报修记录查询</span>
+        </span>
+      </div>
       <div style="display: flex; gap: 8px;">
         <input type="tel" id="inputQueryPhone" maxlength="11" placeholder="输入报修填写的11位手机号" value="${escapeHtml(myPhone)}">
         <button class="btn btn-sm" id="btnQuery" style="flex: none; width: 90px;">查 询</button>
@@ -398,7 +390,9 @@ function bindMineEvents() {
 async function loadMyTickets() {
   const container = document.getElementById('ticketsListContainer');
   if (!container) return;
-  container.innerHTML = `<div class="card text-muted" style="text-align: center; padding: 36px 12px;">正在加载报修记录...</div>`;
+
+  // 渲染现代波浪骨架屏 (Skeleton Screen)
+  container.innerHTML = renderTicketSkeleton(3);
 
   try {
     const list = await request(`/api/tickets?phone=${encodeURIComponent(myPhone)}`);
@@ -416,8 +410,8 @@ async function loadMyTickets() {
 
 function renderTicketCard(t) {
   const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
-  const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">⚠️ ${escapeHtml(t.timeoutReason)}</span>` : '';
-  const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">🔔 催单(${t.remindCount})</span>` : '';
+  const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">${Icons.alertTriangle(12)} ${escapeHtml(t.timeoutReason)}</span>` : '';
+  const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">${Icons.bell(12)} 催单(${t.remindCount})</span>` : '';
 
   const photosHtml = t.photos && t.photos.length > 0
     ? `<div class="photos-grid" style="margin-top: 8px;">${t.photos.map((p) => `<div class="photo-item" style="width: 58px; height: 58px;"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div>`
@@ -425,16 +419,16 @@ function renderTicketCard(t) {
 
   let actionsHtml = `<button class="btn btn-sm btn-ghost" onclick="window.openDetail('${escapeHtml(t.id)}')">查看详情与轨迹</button> `;
   if (t.status === 'pending' || t.status === 'assigned' || t.status === 'working') {
-    actionsHtml += `<button class="btn btn-sm btn-warn" onclick="window.remindTicket('${escapeHtml(t.id)}')">加急催单</button> `;
+    actionsHtml += `<button class="btn btn-sm btn-warn" onclick="window.remindTicket('${escapeHtml(t.id)}')">${Icons.bell(13)} 加急催单</button> `;
   }
   if (t.status === 'done') {
-    actionsHtml += `<button class="btn btn-sm btn-ok" onclick="window.openRate('${escapeHtml(t.id)}')">验收评价</button> `;
+    actionsHtml += `<button class="btn btn-sm btn-ok" onclick="window.openRate('${escapeHtml(t.id)}')">${Icons.check(13)} 验收评价</button> `;
   }
 
   return `
     <div class="ticket-card ${t.isTimeout ? 'is-timeout' : ''}">
       <div class="ticket-head">
-        <span class="ticket-no">${escapeHtml(t.id)}</span>
+        <span class="ticket-no">#${escapeHtml(t.id)}</span>
         <div style="display: flex; gap: 4px; align-items: center;">
           ${remindBadge}
           ${timeoutBadge}
@@ -455,45 +449,42 @@ function renderTicketCard(t) {
   `;
 }
 
-// ----------------- 顺丰/京东快递级沉浸式流转时间轴 (UX 核心升级) -----------------
+// ----------------- 顺丰/京东快递级沉浸式流转时间轴 (矢量 SVG 节点) -----------------
 export function renderStepperTimeline(t) {
   const s = t.status;
   const isRejected = s === 'rejected';
 
-  // 计算节点状态: done / current / upcoming
-  // 1. 提交
   const step1Done = true;
-  // 2. 受理/派工
   const step2Done = ['assigned', 'working', 'done', 'closed'].includes(s);
   const step2Cur = s === 'pending';
-  // 3. 师傅接单与排查
   const step3Done = ['working', 'done', 'closed'].includes(s);
   const step3Cur = s === 'assigned';
-  // 4. 完工待验收
   const step4Done = ['closed'].includes(s);
   const step4Cur = s === 'done';
-  // 5. 验收评价
   const step5Done = s === 'closed';
+
+  const checkSvg = Icons.check(13);
 
   return `
     <div class="stepper-wrap">
       <div style="font-weight: 700; font-size: 14px; margin-bottom: 10px; color: var(--cyan); display: flex; align-items: center; gap: 6px;">
-        <span>📦 报修流转轨迹（顺丰级全程可溯）</span>
+        ${Icons.layers(16)}
+        <span>报修流转轨迹（顺丰级全程可溯）</span>
       </div>
       <div class="stepper-track">
         <!-- 节点 1: 提交报修 -->
         <div class="stepper-item ${step1Done ? 'done' : ''}">
-          <div class="stepper-node">✓</div>
+          <div class="stepper-node">${checkSvg}</div>
           <div class="stepper-header">
             <span class="stepper-title">工单已提交</span>
             <span class="stepper-time">${formatShortTime(t.createdAt)}</span>
           </div>
-          <div class="stepper-desc">报修人 <strong>${escapeHtml(t.reporter)}</strong> (${escapeHtml(t.identity || '师生')}) 发起报修申请</div>
+          <div class="stepper-desc">报修人 <strong>${escapeHtml(t.reporter)}</strong> (${escapeHtml(t.identity || '师生')}) 发起申请</div>
         </div>
 
         <!-- 节点 2: 总务处受理与派工 -->
         <div class="stepper-item ${step2Done ? 'done' : (step2Cur ? 'current' : '')}">
-          <div class="stepper-node">${step2Done ? '✓' : (step2Cur ? '2' : '2')}</div>
+          <div class="stepper-node">${step2Done ? checkSvg : '2'}</div>
           <div class="stepper-header">
             <span class="stepper-title">${isRejected ? '工单已驳回' : (t.assignee ? '总务处已派工' : '总务处受理中')}</span>
             <span class="stepper-time">${step2Done ? formatShortTime(t.createdAt) : ''}</span>
@@ -507,7 +498,7 @@ export function renderStepperTimeline(t) {
 
         <!-- 节点 3: 师傅接单施工 -->
         <div class="stepper-item ${step3Done ? 'done' : (step3Cur ? 'current' : '')}">
-          <div class="stepper-node">${step3Done ? '✓' : '3'}</div>
+          <div class="stepper-node">${step3Done ? checkSvg : '3'}</div>
           <div class="stepper-header">
             <span class="stepper-title">${s === 'working' ? '师傅施工排查中' : (step3Done ? '已到场施工' : '师傅待接单')}</span>
             <span class="stepper-time"></span>
@@ -521,7 +512,7 @@ export function renderStepperTimeline(t) {
 
         <!-- 节点 4: 完工待验收 -->
         <div class="stepper-item ${step4Done ? 'done' : (step4Cur ? 'current' : '')}">
-          <div class="stepper-node">${step4Done ? '✓' : '4'}</div>
+          <div class="stepper-node">${step4Done ? checkSvg : '4'}</div>
           <div class="stepper-header">
             <span class="stepper-title">${t.result ? '维修已完工' : '待完工'}</span>
             <span class="stepper-time">${t.completedAt ? formatShortTime(t.completedAt) : ''}</span>
@@ -533,13 +524,13 @@ export function renderStepperTimeline(t) {
 
         <!-- 节点 5: 验收评价结单 -->
         <div class="stepper-item ${step5Done ? 'done' : ''}">
-          <div class="stepper-node">${step5Done ? '✓' : '5'}</div>
+          <div class="stepper-node">${step5Done ? checkSvg : '5'}</div>
           <div class="stepper-header">
             <span class="stepper-title">${t.rating ? '已验收结单' : '待验收评价'}</span>
             <span class="stepper-time">${t.closedAt ? formatShortTime(t.closedAt) : ''}</span>
           </div>
           <div class="stepper-desc">
-            ${t.rating ? `师生综合评价：${'⭐'.repeat(t.rating.score || 5)} (${escapeHtml(t.rating.comment || '满意')})` : '师傅修好后，师生核验通过并打分结单'}
+            ${t.rating ? `师生综合评价：${Icons.star(14, '', '#f59e0b').repeat(t.rating.score || 5)} (${escapeHtml(t.rating.comment || '满意')})` : '师傅修好后，师生核验通过并打分结单'}
           </div>
         </div>
       </div>
@@ -556,7 +547,7 @@ window.openDetail = async (id) => {
     const timeoutAlert = t.isTimeout
       ? `<div style="background: var(--danger-light); color: var(--danger); border: 1px solid var(--danger); padding: 10px 14px; border-radius: 8px; font-weight: 700; margin-bottom: 12px; font-size: 13.5px; display: flex; align-items: center; gap: 8px;">
           <span class="pulse-dot danger"></span>
-          <span>⏱️ SLA 超时预警：【${escapeHtml(t.timeoutReason)}】已触发加快督办！</span>
+          <span>${Icons.alertTriangle(16)} SLA 超时预警：【${escapeHtml(t.timeoutReason)}】已触发加快督办！</span>
         </div>`
       : '';
 
@@ -566,7 +557,10 @@ window.openDetail = async (id) => {
 
     const finishHtml = t.result
       ? `<div style="background: var(--ok-light); border: 1px solid var(--ok); border-radius: 9px; padding: 12px 14px; margin-top: 12px; font-size: 13.5px;">
-          <div style="font-weight: 700; color: var(--ok); margin-bottom: 4px;">✅ 维修处理结论：</div>
+          <div style="font-weight: 700; color: var(--ok); margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+            ${Icons.check(16)}
+            <span>维修处理结论：</span>
+          </div>
           <div>${escapeHtml(t.result)}</div>
           ${t.finishPhotos && t.finishPhotos.length > 0 ? `<div class="photos-grid" style="margin-top: 8px;">${t.finishPhotos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div>` : ''}
         </div>`
@@ -574,9 +568,12 @@ window.openDetail = async (id) => {
 
     const ratingHtml = t.rating
       ? `<div style="background: var(--warn-light); border: 1px solid var(--warn); border-radius: 9px; padding: 12px 14px; margin-top: 12px; font-size: 13.5px;">
-          <div style="font-weight: 700; color: var(--warn); margin-bottom: 4px;">⭐ 验收评价与评分：</div>
-          <div>${'⭐'.repeat(t.rating.score || 5)} (${t.rating.score}星)</div>
-          <div style="margin-top: 4px; color: var(--text-muted);">反馈内容：${escapeHtml(t.rating.comment || '服务满意，已修好')}</div>
+          <div style="font-weight: 700; color: var(--warn); margin-bottom: 4px; display: flex; align-items: center; gap: 4px;">
+            ${Icons.star(16, '', '#f59e0b')}
+            <span>验收评价与评分：</span>
+          </div>
+          <div style="display: flex; gap: 3px; margin: 4px 0;">${Icons.star(16, '', '#f59e0b').repeat(t.rating.score || 5)} (${t.rating.score}星)</div>
+          <div style="color: var(--text-muted);">反馈内容：${escapeHtml(t.rating.comment || '服务满意，已修好')}</div>
         </div>`
       : '';
 
@@ -584,7 +581,10 @@ window.openDetail = async (id) => {
 
     const commentsHtml = `
       <div style="background: var(--card-alt); border-radius: 9px; padding: 12px; margin-top: 14px; border: 1px solid var(--border);">
-        <div style="font-weight: 700; font-size: 13.5px; margin-bottom: 8px; color: var(--text);">💬 现场三方留言沟通板 (${(t.comments || []).length})</div>
+        <div style="font-weight: 700; font-size: 13.5px; margin-bottom: 8px; color: var(--text); display: flex; align-items: center; gap: 6px;">
+          ${Icons.messageSquare(16, 'text-cyan')}
+          <span>现场三方留言沟通板 (${(t.comments || []).length})</span>
+        </div>
         <div style="display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto;">
           ${(t.comments || []).length === 0 ? `<div class="text-muted" style="font-size: 12px;">暂无留言，您可输入文字与师傅/总务处留言互动</div>` : (t.comments || []).map((c) => `
             <div style="border-bottom: 1px dashed var(--border); padding-bottom: 6px;">
@@ -678,18 +678,18 @@ window.openRate = (id) => {
     <div class="form-group">
       <label>服务评分 (1~5星)</label>
       <div class="chips-group" id="rateScoreGroup">
-        <span class="chip active" data-s="5">⭐⭐⭐⭐⭐ 非常满意</span>
-        <span class="chip" data-s="4">⭐⭐⭐⭐ 满意</span>
-        <span class="chip" data-s="3">⭐⭐⭐ 一般</span>
-        <span class="chip" data-s="2">⭐⭐ 不太满意</span>
-        <span class="chip" data-s="1">⭐ 很差</span>
+        <span class="chip active" data-s="5">5星 非常满意</span>
+        <span class="chip" data-s="4">4星 满意</span>
+        <span class="chip" data-s="3">3星 一般</span>
+        <span class="chip" data-s="2">2星 不太满意</span>
+        <span class="chip" data-s="1">1星 很差</span>
       </div>
     </div>
     <div class="form-group">
       <label>评价与建议反馈</label>
       <textarea id="rateCommentText" placeholder="师傅处理及时，技术好，现场收拾得很干净..."></textarea>
     </div>
-    <button class="btn btn-ok" id="btnRateSubmit">⚡ 提交评价并结单</button>
+    <button class="btn btn-ok" id="btnRateSubmit">${Icons.bolt(16)} 提交评价并结单</button>
   `);
 
   document.getElementById('rateScoreGroup').onclick = (e) => {

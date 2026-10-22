@@ -1011,3 +1011,46 @@ textarea:focus {
 .print-sheet {
   display: none;
 }
+
+
+/* 骨架屏 */
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--card-alt) 25%, var(--border-light) 50%, var(--card-alt) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite ease-in-out;
+  border-radius: var(--radius-sm);
+  display: block;
+}
+.skeleton-text {
+  height: 14px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+}
+.skeleton-title {
+  height: 20px;
+  width: 55%;
+  margin-bottom: 12px;
+  border-radius: 6px;
+}
+.skeleton-pill {
+  height: 24px;
+  width: 70px;
+  border-radius: 20px;
+}
+.skeleton-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
+}
+svg {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
