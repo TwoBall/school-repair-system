@@ -317,22 +317,37 @@ function renderAdminTicketCard(t, isSelected) {
       <div class="ticket-meta">
         <span>类别：${escapeHtml(t.category)}</span> | 
         <span>紧急度：<strong style="${t.urgency === '紧急' ? 'color: var(--danger);' : ''}">${escapeHtml(t.urgency)}</strong></span><br>
-        <span>报修人：${escapeHtml(t.reporter)} 📱 ${escapeHtml(t.phone)}</span>
+        <span>报修人：${escapeHtml(t.reporter)} · ${Icons.phone(12)} ${escapeHtml(t.phone)}</span>
         ${t.assignee ? `<br><strong style="color: var(--brand);">负责师傅：${escapeHtml(t.assignee)}</strong>` : ''}
       </div>
       <div class="ticket-desc" style="max-height: 48px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
         ${escapeHtml(t.desc)}
       </div>
+      <div style="margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 11.5px; color: var(--text-muted);">${formatShortTime(t.createdAt)}</span>
+        <button class="btn btn-sm btn-ghost" style="padding: 3px 10px; font-size: 12px; font-weight: 700; color: var(--cyan); border: 1px solid var(--border);" onclick="event.stopPropagation(); window.selectTicket('${escapeHtml(t.id)}')">
+          派工 / 详情 →
+        </button>
+      </div>
     </div>
   `;
 }
 
-window.selectTicket = (id) => {
+window.selectTicket = (id, openMobileDrawer = true) => {
   selectedTicketId = id;
   document.querySelectorAll('#poolListContainer .ticket-card-interactive').forEach((el) => el.classList.remove('active'));
   const targetCard = document.getElementById(`card_${id}`);
   if (targetCard) targetCard.classList.add('active');
+
+  if (openMobileDrawer) {
+    document.querySelector('.admin-split-layout')?.classList.add('mobile-detail-active');
+  }
+
   renderWorkbenchDetail(id);
+};
+
+window.closeMobileDetail = () => {
+  document.querySelector('.admin-split-layout')?.classList.remove('mobile-detail-active');
 };
 
 // 渲染右侧抽屉式极速调度与详情工作台
@@ -347,7 +362,7 @@ async function renderWorkbenchDetail(id) {
   }
 
   const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
-  const workerOptions = appConfig.workers.map((w) => `<option value="${escapeHtml(w.name)}">${escapeHtml(w.name)} (${escapeHtml(w.skill)} 📱${escapeHtml(w.phone)})</option>`).join('');
+  const workerOptions = appConfig.workers.map((w) => `<option value="${escapeHtml(w.name)}">${escapeHtml(w.name)} (${escapeHtml(w.skill)} · ${escapeHtml(w.phone)})</option>`).join('');
 
   const photosHtml = t.photos && t.photos.length > 0
     ? `<div style="margin-top: 8px;"><strong>报修照片：</strong><div class="photos-grid">${t.photos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div></div>`
@@ -411,6 +426,17 @@ async function renderWorkbenchDetail(id) {
   `;
 
   wb.innerHTML = `
+    <div class="mobile-drawer-header">
+      <button class="btn btn-sm btn-ghost" onclick="window.closeMobileDetail()" style="display: flex; align-items: center; gap: 6px; font-weight: 700; color: var(--text);">
+        ${Icons.arrowLeft(16)}
+        <span>返回工单列表</span>
+      </button>
+      <div style="font-size: 13px; font-weight: 700; color: var(--cyan);">#${escapeHtml(t.id)} 派工工作台</div>
+      <button class="btn btn-sm btn-ghost" onclick="window.closeMobileDetail()" style="padding: 4px 8px;" title="关闭">
+        ${Icons.x(16)}
+      </button>
+    </div>
+
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 12px;">
         <div>
@@ -433,7 +459,7 @@ async function renderWorkbenchDetail(id) {
       <div style="background: var(--card-alt); border: 1px solid var(--border); border-radius: 9px; padding: 12px; font-size: 13.5px; line-height: 1.8;">
         <div><strong>报修类别：</strong>${escapeHtml(t.category)} | <strong>紧急程度：</strong><span style="${t.urgency === '紧急' ? 'color: var(--danger); font-weight: 700;' : ''}">${escapeHtml(t.urgency)}</span></div>
         <div>
-          <strong>报修人员：</strong>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)}) 📱 ${escapeHtml(t.phone)} 
+          <strong>报修人员：</strong>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)}) · ${Icons.phone(12)} ${escapeHtml(t.phone)} 
           <button class="btn btn-sm btn-ghost" style="padding: 2px 8px; font-size: 11px; margin-left: 6px;" onclick="window.copyText('${escapeHtml(t.phone)}', '已复制报修人手机号')">
             ${Icons.copy(11)} 复制
           </button>
@@ -484,6 +510,7 @@ async function renderWorkbenchDetail(id) {
           body: { worker, note },
         });
         toast(`已成功派发给 ${worker}！`);
+        window.closeMobileDetail();
         loadPoolTickets();
       } catch (err) {
         toast(err.message);
@@ -503,6 +530,7 @@ async function renderWorkbenchDetail(id) {
           body: { note },
         });
         toast('已驳回该工单');
+        window.closeMobileDetail();
         loadPoolTickets();
       } catch (err) {
         toast(err.message);
@@ -958,7 +986,10 @@ async function loadSettingsForm() {
         </div>
       </div>
 
-      <div style="font-weight: 700; color: var(--cyan); margin: 12px 0 8px;">⏱️ SLA 服务水平超时考核阈值 (小时)</div>
+      <div style="font-weight: 700; color: var(--cyan); margin: 12px 0 8px; display: flex; align-items: center; gap: 6px;">
+        ${Icons.clock(16, 'text-cyan')}
+        <span>SLA 服务水平超时考核阈值 (小时)</span>
+      </div>
       <div class="grid-form">
         <div class="form-group">
           <label>待受理超时 (h)</label>
@@ -974,7 +1005,10 @@ async function loadSettingsForm() {
         </div>
       </div>
 
-      <div style="font-weight: 700; color: var(--cyan); margin: 14px 0 8px;">🤖 企业微信 / 钉钉 / 飞书 机器人推送</div>
+      <div style="font-weight: 700; color: var(--cyan); margin: 14px 0 8px; display: flex; align-items: center; gap: 6px;">
+        ${Icons.bot(16, 'text-cyan')}
+        <span>企业微信 / 钉钉 / 飞书 机器人推送</span>
+      </div>
       <div class="form-group">
         <label>机器人类型</label>
         <select id="setWebhookType">
@@ -989,8 +1023,12 @@ async function loadSettingsForm() {
         <input type="text" id="setWebhookUrl" placeholder="https://qyapi.weixin.qq.com/... 或 https://oapi.dingtalk.com/..." value="${escapeHtml(s.webhook_url || '')}">
       </div>
       <div style="display: flex; gap: 8px; margin-top: 14px;">
-        <button class="btn btn-ok" id="btnSaveSettings" style="flex: 2;">💾 保存系统配置</button>
-        <button class="btn btn-ghost" id="btnTestWebhook" style="flex: 1;">🧪 测试推送</button>
+        <button class="btn btn-ok" id="btnSaveSettings" style="flex: 2;">
+          ${Icons.check(16)} 保存系统配置
+        </button>
+        <button class="btn btn-ghost" id="btnTestWebhook" style="flex: 1;">
+          ${Icons.bolt(16)} 测试推送
+        </button>
       </div>
     </div>
   `;

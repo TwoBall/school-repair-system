@@ -294,7 +294,7 @@ function bindFormEvents() {
         localStorage.setItem('bx_reporter_phone', phone);
         uploadedPhotos = [];
 
-        toast(`🎉 报修提交成功！工单号：${created.id}`, () => {
+        toast(`报修提交成功！工单号：${created.id}`, () => {
           switchTab('mine');
         });
       } catch (err) {
@@ -617,7 +617,7 @@ window.openDetail = async (id) => {
       </div>
       <div style="background: var(--card-alt); border: 1px solid var(--border); border-radius: 9px; padding: 12px; font-size: 13.5px; line-height: 1.8;">
         <div><strong>报修类别：</strong>${escapeHtml(t.category)} | <strong>紧急程度：</strong>${escapeHtml(t.urgency)}</div>
-        <div><strong>报修人员：</strong>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)}) 📱 ${escapeHtml(t.phone)}</div>
+        <div><strong>报修人员：</strong>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)}) · ${Icons.phone(12)} ${escapeHtml(t.phone)}</div>
         <div><strong>报修时间：</strong>${formatTime(t.createdAt)}</div>
         ${t.assignee ? `<div><strong>责任师傅：</strong><span style="color: var(--brand); font-weight: 700;">${escapeHtml(t.assignee)}</span></div>` : ''}
         <div style="margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px;">
@@ -661,7 +661,7 @@ window.remindTicket = async (id) => {
       method: 'POST',
       body: { note },
     });
-    toast('🔔 加急催单已通知总务处及师傅！');
+    toast('加急催单已通知总务处及师傅！');
     loadMyTickets();
   } catch (err) {
     toast(err.message);
@@ -707,7 +707,7 @@ window.openRate = (id) => {
         method: 'POST',
         body: { score: curScore, comment },
       });
-      toast('🎉 感谢您的评价，工单已正式结单！');
+      toast('感谢您的评价，工单已正式结单！');
       closeModal();
       loadMyTickets();
     } catch (err) {

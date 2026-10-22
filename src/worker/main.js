@@ -325,7 +325,7 @@ window.openFinishModal = (id) => {
         token: workerToken,
         body: { result, photos: finishPhotos },
       });
-      toast('🎉 完工提交成功，已通知报修人验收！');
+      toast('完工提交成功，已通知报修人验收！');
       closeModal();
       loadWorkerTickets();
     } catch (err) {
