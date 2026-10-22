@@ -12,3 +12,4 @@ database_id = "your-database-id-here"
 # [[r2_buckets]]
 # binding = "PHOTOS"
 # bucket_name = "school-repair-photos"
+

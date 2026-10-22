@@ -69,3 +69,4 @@ CREATE INDEX IF NOT EXISTS idx_tickets_phone ON tickets(phone);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_assignee ON tickets(assignee);
 CREATE INDEX IF NOT EXISTS idx_tickets_createdAt ON tickets(createdAt);
+
