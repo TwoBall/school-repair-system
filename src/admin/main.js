@@ -1,10 +1,11 @@
 /**
  * 总务处调度管理中心 - 前端主逻辑
- * 升级：智慧后勤大屏科技质感 + 深浅色切换 + 左右分栏抽屉式极速调度 + 顺丰级流转时间轴 + 命令行级派工
+ * 升级：纯矢量 SVG 现代图标 + 渐变波浪骨架屏 + 科技指挥中心质感 + 左右分栏抽屉极速调度
  */
 import '../common/style.css';
+import { Icons } from '../common/icons.js';
 import { request, STATUS_MAP } from '../common/api.js';
-import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, exportToCsv, initTheme, copyText } from '../common/utils.js';
+import { escapeHtml, formatTime, formatShortTime, toast, openModal, closeModal, viewImage, exportToCsv, initTheme, copyText, renderTicketSkeleton, renderWorkbenchDetailSkeleton, renderKpiSkeleton } from '../common/utils.js';
 import { generateQrImage } from '../common/qrcode.js';
 import { renderStepperTimeline } from '../reporter/main.js';
 
@@ -46,12 +47,12 @@ function renderLoginView() {
     <header class="topbar">
       <div class="nav-wrap">
         <div class="brand">
-          <span style="font-size: 22px;">🏢</span>
+          <span style="color: var(--cyan);">${Icons.building(22)}</span>
           <div class="title">学校总务报修 - 调度管理中心</div>
         </div>
         <div class="topbar-actions">
           <div class="portal-tag">总务管理端</div>
-          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题">☀️</button>
+          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题"></button>
         </div>
       </div>
     </header>
@@ -59,13 +60,19 @@ function renderLoginView() {
     <main class="app-container" style="max-width: 440px; margin-top: 40px;">
       <div class="card">
         <div class="card-title">
-          <span>🔐 总务处调度员验证</span>
+          <span style="display: flex; align-items: center; gap: 6px;">
+            ${Icons.doorLock(18, 'text-cyan')}
+            <span>总务处调度员验证</span>
+          </span>
         </div>
         <div class="form-group">
           <label>调度管理员口令 / 密码</label>
           <input type="password" id="adminKeyInput" placeholder="默认初始口令 admin888" autocomplete="current-password">
         </div>
-        <button class="btn" id="btnAdminLogin" style="margin-top: 10px;">⚡ 登 录 调 度 中 心</button>
+        <button class="btn" id="btnAdminLogin" style="margin-top: 10px;">
+          ${Icons.bolt(16)}
+          <span>登 录 调 度 中 心</span>
+        </button>
       </div>
     </main>
   `;
@@ -97,11 +104,11 @@ function renderAdminView() {
     <header class="topbar">
       <div class="nav-wrap">
         <div class="brand">
-          <span style="font-size: 22px;">🏢</span>
+          <span style="color: var(--cyan);">${Icons.building(22)}</span>
           <div class="title">${escapeHtml(appConfig.schoolName || '总务处')} · 调度指挥中心</div>
         </div>
         <div class="topbar-actions">
-          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题">☀️</button>
+          <button class="theme-toggle-btn" onclick="window.toggleTheme()" title="切换深浅主题"></button>
           <div class="portal-tag"><span class="pulse-dot ok"></span> 调度员在线</div>
           <button class="btn btn-sm btn-danger" id="btnLogoutAdmin">退出</button>
         </div>
@@ -112,19 +119,19 @@ function renderAdminView() {
 
     <nav class="tabbar">
       <button class="tabbar-item active" id="tabPoolBtn">
-        <span class="icon">📑</span>
+        <span class="icon">${Icons.layers(20)}</span>
         <span>调度大池</span>
       </button>
       <button class="tabbar-item" id="tabDashBtn">
-        <span class="icon">📊</span>
+        <span class="icon">${Icons.barChart(20)}</span>
         <span>后勤大屏</span>
       </button>
       <button class="tabbar-item" id="tabManageBtn">
-        <span class="icon">⚙️</span>
+        <span class="icon">${Icons.settings(20)}</span>
         <span>基础配置</span>
       </button>
       <button class="tabbar-item" id="tabQrcodeBtn">
-        <span class="icon">📱</span>
+        <span class="icon">${Icons.qrCode(20)}</span>
         <span>报修码</span>
       </button>
     </nav>
@@ -152,7 +159,7 @@ function switchTab(tab) {
     bindPoolEvents();
     loadPoolTickets();
   } else if (tab === 'dash') {
-    container.innerHTML = `<div class="card text-muted" style="text-align: center; padding: 40px;">正在汇总指挥大屏数据...</div>`;
+    container.innerHTML = renderKpiSkeleton();
     loadDashboard();
   } else if (tab === 'manage') {
     container.innerHTML = renderManageView();
@@ -163,7 +170,7 @@ function switchTab(tab) {
   }
 }
 
-// ----------------- 1. 工单调度大池 (左右分栏抽屉式极速调度 UX 升级) -----------------
+// ----------------- 1. 工单调度大池 (左右分栏抽屉式极速调度) -----------------
 function renderPoolView() {
   const bldgOptions = `<option value="all">全部楼栋</option>` + appConfig.buildings.map((b) => `<option value="${escapeHtml(b)}" ${filterState.building === b ? 'selected' : ''}>${escapeHtml(b)}</option>`).join('');
   const catOptions = `<option value="all">全部分类</option>` + appConfig.categories.map((c) => `<option value="${escapeHtml(c)}" ${filterState.category === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('');
@@ -171,8 +178,14 @@ function renderPoolView() {
   return `
     <div class="card" style="margin-bottom: 12px;">
       <div class="card-title">
-        <span>📑 全校工单调度大池</span>
-        <button class="btn btn-sm btn-ghost" id="btnExportCsv">📥 导出 Excel/CSV 报表</button>
+        <span style="display: flex; align-items: center; gap: 6px;">
+          ${Icons.layers(18, 'text-cyan')}
+          <span>全校工单调度大池</span>
+        </span>
+        <button class="btn btn-sm btn-ghost" id="btnExportCsv">
+          ${Icons.download(14)}
+          <span>导出 Excel/CSV 报表</span>
+        </button>
       </div>
 
       <div class="grid-form" style="margin-bottom: 10px;">
@@ -180,7 +193,7 @@ function renderPoolView() {
         <div style="display: flex; gap: 8px;">
           <select id="poolBldgSelect">${bldgOptions}</select>
           <select id="poolCatSelect">${catOptions}</select>
-          <button class="btn btn-sm" id="btnFilterSearch" style="flex: none; width: 80px;">快速筛选</button>
+          <button class="btn btn-sm" id="btnFilterSearch" style="flex: none; width: 85px;">快速筛选</button>
         </div>
       </div>
 
@@ -191,7 +204,9 @@ function renderPoolView() {
         <span class="chip ${filterState.status === 'working' ? 'active' : ''}" data-st="working">维修中</span>
         <span class="chip ${filterState.status === 'done' ? 'active' : ''}" data-st="done">待验收</span>
         <span class="chip ${filterState.status === 'closed' ? 'active' : ''}" data-st="closed">已结单</span>
-        <span class="chip danger ${filterState.timeoutOnly ? 'active' : ''}" data-st="timeout">⚠️ 超时预警工单</span>
+        <span class="chip danger ${filterState.timeoutOnly ? 'active' : ''}" data-st="timeout">
+          ${Icons.alertTriangle(13)} 超时预警工单
+        </span>
       </div>
     </div>
 
@@ -199,15 +214,12 @@ function renderPoolView() {
     <div class="admin-split-layout">
       <!-- 左栏: 瀑布流工单列表 -->
       <div class="split-list-pane" id="poolListContainer">
-        <div class="card text-muted" style="text-align: center; padding: 40px;">正在加载工单...</div>
+        ${renderTicketSkeleton(4)}
       </div>
 
       <!-- 右栏: 抽屉式极速调度与详情工作台 (Sticky) -->
       <div class="split-detail-pane" id="poolDetailWorkbench">
-        <div class="card text-muted" style="text-align: center; padding: 60px 20px;">
-          <span style="font-size: 32px; display: block; margin-bottom: 8px;">👈</span>
-          <span>在左侧列表中点击任意工单，即刻在此展开极速派工与完整档案</span>
-        </div>
+        ${renderWorkbenchDetailSkeleton()}
       </div>
     </div>
   `;
@@ -243,7 +255,9 @@ function bindPoolEvents() {
 async function loadPoolTickets() {
   const container = document.getElementById('poolListContainer');
   if (!container) return;
-  container.innerHTML = `<div class="card text-muted" style="text-align: center; padding: 36px 12px;">加载中...</div>`;
+
+  // 呈现左侧工单瀑布流骨架屏
+  container.innerHTML = renderTicketSkeleton(4);
 
   let q = `/api/tickets?`;
   if (filterState.status !== 'all') q += `&status=${encodeURIComponent(filterState.status)}`;
@@ -266,14 +280,12 @@ async function loadPoolTickets() {
       return;
     }
 
-    // 默认高亮并展开第一条或之前选中的工单
     if (!selectedTicketId || !list.find((t) => t.id === selectedTicketId)) {
       selectedTicketId = list[0].id;
     }
 
     container.innerHTML = list.map((t) => renderAdminTicketCard(t, t.id === selectedTicketId)).join('');
 
-    // 加载右侧抽屉工作台
     renderWorkbenchDetail(selectedTicketId);
   } catch (err) {
     if (err.message && err.message.includes('未授权')) {
@@ -286,8 +298,8 @@ async function loadPoolTickets() {
 
 function renderAdminTicketCard(t, isSelected) {
   const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
-  const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">⚠️ ${escapeHtml(t.timeoutReason)}</span>` : '';
-  const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">🔔 催单(${t.remindCount})</span>` : '';
+  const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">${Icons.alertTriangle(12)} ${escapeHtml(t.timeoutReason)}</span>` : '';
+  const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">${Icons.bell(12)} 催单(${t.remindCount})</span>` : '';
 
   return `
     <div class="ticket-card ticket-card-interactive ${t.isTimeout ? 'is-timeout' : ''} ${isSelected ? 'active' : ''}" 
@@ -315,7 +327,6 @@ function renderAdminTicketCard(t, isSelected) {
   `;
 }
 
-// 选中工单并在右侧工作台即时展开
 window.selectTicket = (id) => {
   selectedTicketId = id;
   document.querySelectorAll('#poolListContainer .ticket-card-interactive').forEach((el) => el.classList.remove('active'));
@@ -346,14 +357,14 @@ async function renderWorkbenchDetail(id) {
     ? `<div style="margin-top: 8px;"><strong>完工照片：</strong><div class="photos-grid">${t.finishPhotos.map((p) => `<div class="photo-item"><img src="${escapeHtml(p)}" onclick="window.viewImage('${escapeHtml(p)}')"></div>`).join('')}</div></div>`
     : '';
 
-  // 极速派工区域 (1-Click Inline Dispatcher)
   let dispatchBoxHtml = '';
   if (t.status === 'pending' || t.status === 'assigned') {
     dispatchBoxHtml = `
       <div style="background: var(--card-alt); border: 1px solid var(--border); border-radius: 9px; padding: 14px; margin-top: 14px;">
         <div style="font-weight: 700; color: var(--cyan); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-          <span>⚡ 极速派工工作台</span>
-          <span style="font-size: 11px; font-weight: normal; color: var(--text-muted);">(实时生效并向师傅推送)</span>
+          ${Icons.bolt(16)}
+          <span>极速派工工作台</span>
+          <span style="font-size: 11.5px; font-weight: normal; color: var(--text-muted);">(实时生效并向师傅推送)</span>
         </div>
         <div class="form-group" style="margin-bottom: 8px;">
           <label style="font-size: 12.5px;">指派负责师傅</label>
@@ -364,7 +375,9 @@ async function renderWorkbenchDetail(id) {
           <input type="text" id="inlineAssignNote" placeholder="例如：带上登高折叠梯，上门前电话确认...">
         </div>
         <div style="display: flex; gap: 8px;">
-          <button class="btn btn-ok" id="btnInlineDispatch" style="flex: 2;">⚡ 确认指派师傅</button>
+          <button class="btn btn-ok" id="btnInlineDispatch" style="flex: 2;">
+            ${Icons.bolt(16)} 确认指派负责师傅
+          </button>
           <button class="btn btn-danger" id="btnInlineReject" style="flex: 1;">驳回</button>
         </div>
       </div>
@@ -375,7 +388,10 @@ async function renderWorkbenchDetail(id) {
 
   const commentsHtml = `
     <div style="background: var(--card-alt); border-radius: 9px; padding: 12px; margin-top: 14px; border: 1px solid var(--border);">
-      <div style="font-weight: 700; font-size: 13.5px; margin-bottom: 8px; color: var(--text);">💬 现场三方沟通与留言板 (${(t.comments || []).length})</div>
+      <div style="font-weight: 700; font-size: 13.5px; margin-bottom: 8px; color: var(--text); display: flex; align-items: center; gap: 6px;">
+        ${Icons.messageSquare(16, 'text-cyan')}
+        <span>现场三方沟通与留言板 (${(t.comments || []).length})</span>
+      </div>
       <div style="display: flex; flex-direction: column; gap: 8px; max-height: 160px; overflow-y: auto;">
         ${(t.comments || []).length === 0 ? `<div class="text-muted" style="font-size: 12px;">暂无留言</div>` : (t.comments || []).map((c) => `
           <div style="border-bottom: 1px dashed var(--border); padding-bottom: 4px;">
@@ -402,17 +418,26 @@ async function renderWorkbenchDetail(id) {
           <span style="font-weight: 700; font-family: ui-monospace, monospace; margin-left: 6px;">#${escapeHtml(t.id)}</span>
         </div>
         <div style="display: flex; gap: 6px;">
-          <button class="btn btn-sm btn-ghost" onclick="window.printTicket('${escapeHtml(t.id)}')">🖨️ 打印派工单</button>
+          <button class="btn btn-sm btn-ghost" onclick="window.printTicket('${escapeHtml(t.id)}')">
+            ${Icons.printer(14)}
+            <span>打印派工单</span>
+          </button>
         </div>
       </div>
 
-      <div style="font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 8px;">
-        📍 ${escapeHtml(t.building)} · ${escapeHtml(t.room)}
+      <div style="font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+        <span>${Icons.pin(18, 'text-cyan')}</span>
+        <span>${escapeHtml(t.building)} · ${escapeHtml(t.room)}</span>
       </div>
 
       <div style="background: var(--card-alt); border: 1px solid var(--border); border-radius: 9px; padding: 12px; font-size: 13.5px; line-height: 1.8;">
         <div><strong>报修类别：</strong>${escapeHtml(t.category)} | <strong>紧急程度：</strong><span style="${t.urgency === '紧急' ? 'color: var(--danger); font-weight: 700;' : ''}">${escapeHtml(t.urgency)}</span></div>
-        <div><strong>报修人员：</strong>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)}) 📱 ${escapeHtml(t.phone)} <button class="btn btn-sm btn-ghost" style="padding: 2px 8px; font-size: 11px; margin-left: 6px;" onclick="window.copyText('${escapeHtml(t.phone)}', '已复制报修人手机号')">复制</button></div>
+        <div>
+          <strong>报修人员：</strong>${escapeHtml(t.reporter)} (${escapeHtml(t.identity)}) 📱 ${escapeHtml(t.phone)} 
+          <button class="btn btn-sm btn-ghost" style="padding: 2px 8px; font-size: 11px; margin-left: 6px;" onclick="window.copyText('${escapeHtml(t.phone)}', '已复制报修人手机号')">
+            ${Icons.copy(11)} 复制
+          </button>
+        </div>
         <div><strong>指派师傅：</strong><strong style="color: var(--brand);">${escapeHtml(t.assignee || '未指派')}</strong></div>
         <div><strong>提交时间：</strong>${formatTime(t.createdAt)}</div>
         <div style="margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px;">
@@ -423,17 +448,21 @@ async function renderWorkbenchDetail(id) {
 
       ${t.result ? `
         <div style="background: var(--ok-light); border: 1px solid var(--ok); border-radius: 9px; padding: 12px; margin-top: 12px; font-size: 13.5px;">
-          <div style="font-weight: 700; color: var(--ok);">✅ 维修完工报告：</div>
-          <div>${escapeHtml(t.result)}</div>
+          <div style="font-weight: 700; color: var(--ok); display: flex; align-items: center; gap: 6px;">
+            ${Icons.check(16)} 维修完工报告：
+          </div>
+          <div style="margin-top: 4px;">${escapeHtml(t.result)}</div>
           ${finishPhotosHtml}
         </div>
       ` : ''}
 
       ${t.rating ? `
         <div style="background: var(--warn-light); border: 1px solid var(--warn); border-radius: 9px; padding: 12px; margin-top: 12px; font-size: 13.5px;">
-          <div style="font-weight: 700; color: var(--warn);">⭐ 师生验收好评：</div>
-          <div>${'⭐'.repeat(t.rating.score || 5)} (${t.rating.score}星)</div>
-          <div style="margin-top: 3px; color: var(--text-muted);">${escapeHtml(t.rating.comment || '满意')}</div>
+          <div style="font-weight: 700; color: var(--warn); display: flex; align-items: center; gap: 4px;">
+            ${Icons.star(16, '', '#f59e0b')} 师生验收好评：
+          </div>
+          <div style="margin: 3px 0;">${Icons.star(16, '', '#f59e0b').repeat(t.rating.score || 5)} (${t.rating.score}星)</div>
+          <div style="color: var(--text-muted);">${escapeHtml(t.rating.comment || '满意')}</div>
         </div>
       ` : ''}
 
@@ -443,7 +472,6 @@ async function renderWorkbenchDetail(id) {
     </div>
   `;
 
-  // 绑定极速派工按钮
   const btnDispatch = document.getElementById('btnInlineDispatch');
   if (btnDispatch) {
     btnDispatch.onclick = async () => {
@@ -455,7 +483,7 @@ async function renderWorkbenchDetail(id) {
           token: adminToken,
           body: { worker, note },
         });
-        toast(`⚡ 已成功派发给 ${worker}！`);
+        toast(`已成功派发给 ${worker}！`);
         loadPoolTickets();
       } catch (err) {
         toast(err.message);
@@ -463,7 +491,6 @@ async function renderWorkbenchDetail(id) {
     };
   }
 
-  // 绑定驳回按钮
   const btnReject = document.getElementById('btnInlineReject');
   if (btnReject) {
     btnReject.onclick = async () => {
@@ -483,7 +510,6 @@ async function renderWorkbenchDetail(id) {
     };
   }
 
-  // 绑定工作台留言发送
   const btnSendComment = document.getElementById('btnWbSendComment');
   if (btnSendComment) {
     btnSendComment.onclick = async () => {
@@ -587,9 +613,12 @@ function handleExportCsv() {
   exportToCsv(`总务报修导出_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
 }
 
-// ----------------- 2. 数据统计大屏 -----------------
+// ----------------- 2. 数据统计大屏 (带骨架屏动画) -----------------
 async function loadDashboard() {
   const container = document.getElementById('adminMainContainer');
+  // 呈现大屏骨架屏
+  container.innerHTML = renderKpiSkeleton();
+
   try {
     const st = await request('/api/stats/dashboard', { token: adminToken });
     container.innerHTML = `
@@ -597,17 +626,27 @@ async function loadDashboard() {
         <div class="kpi-card"><div class="val" style="color: var(--cyan);">${st.total}</div><div class="lbl">累计报修总数</div></div>
         <div class="kpi-card"><div class="val" style="color: var(--warn);">${st.pending + st.assigned + st.working}</div><div class="lbl">在办流转中</div></div>
         <div class="kpi-card success"><div class="val" style="color: var(--ok);">${st.finishRate}%</div><div class="lbl">综合办结率</div></div>
-        <div class="kpi-card"><div class="val" style="color: #eab308;">${st.avgScore}⭐</div><div class="lbl">满意度评分</div></div>
-        <div class="kpi-card danger" id="cardKpiTimeout" style="cursor: pointer;"><div class="val" style="color: var(--danger);"><span class="pulse-dot danger"></span> ${st.timeouts}</div><div class="lbl">⚠️ 超时工单 (点击督办)</div></div>
+        <div class="kpi-card"><div class="val" style="color: #eab308; display: flex; align-items: center; justify-content: center; gap: 4px;">${Icons.star(20, '', '#eab308')} ${st.avgScore}</div><div class="lbl">满意度评分</div></div>
+        <div class="kpi-card danger" id="cardKpiTimeout" style="cursor: pointer;"><div class="val" style="color: var(--danger);"><span class="pulse-dot danger"></span> ${st.timeouts}</div><div class="lbl">超时工单 (点击督办)</div></div>
       </div>
 
       <div class="card">
-        <div class="card-title"><span>📊 故障分类报修热力分布</span></div>
+        <div class="card-title">
+          <span style="display: flex; align-items: center; gap: 6px;">
+            ${Icons.barChart(18, 'text-cyan')}
+            <span>故障分类报修热力分布</span>
+          </span>
+        </div>
         <div style="display: flex; flex-direction: column; gap: 10px;">${renderBarList(st.catMap, st.total)}</div>
       </div>
 
       <div class="card">
-        <div class="card-title"><span>🏢 校区楼栋报修频次热力排行</span></div>
+        <div class="card-title">
+          <span style="display: flex; align-items: center; gap: 6px;">
+            ${Icons.building(18, 'text-cyan')}
+            <span>校区楼栋报修频次热力排行</span>
+          </span>
+        </div>
         <div style="display: flex; flex-direction: column; gap: 10px;">${renderBarList(st.bldgMap, st.total)}</div>
       </div>
     `;
@@ -646,12 +685,25 @@ function renderBarList(map, total) {
 function renderManageView() {
   return `
     <div class="card">
-      <div class="card-title"><span>⚙️ 后勤基础数据与系统设置</span></div>
+      <div class="card-title">
+        <span style="display: flex; align-items: center; gap: 6px;">
+          ${Icons.settings(18, 'text-cyan')}
+          <span>后勤基础数据与系统设置</span>
+        </span>
+      </div>
       <div class="chips-group" id="manageSubTabChips">
-        <span class="chip ${subManageTab === 'workers' ? 'active' : ''}" data-sub="workers">👨‍🔧 维修师傅管理</span>
-        <span class="chip ${subManageTab === 'buildings' ? 'active' : ''}" data-sub="buildings">🏢 校区楼栋管理</span>
-        <span class="chip ${subManageTab === 'categories' ? 'active' : ''}" data-sub="categories">🏷️ 故障分类管理</span>
-        <span class="chip ${subManageTab === 'settings' ? 'active' : ''}" data-sub="settings">🔔 预警与机器人通知</span>
+        <span class="chip ${subManageTab === 'workers' ? 'active' : ''}" data-sub="workers">
+          ${Icons.hardHat(14)} 维修师傅管理
+        </span>
+        <span class="chip ${subManageTab === 'buildings' ? 'active' : ''}" data-sub="buildings">
+          ${Icons.building(14)} 校区楼栋管理
+        </span>
+        <span class="chip ${subManageTab === 'categories' ? 'active' : ''}" data-sub="categories">
+          ${Icons.layers(14)} 故障分类管理
+        </span>
+        <span class="chip ${subManageTab === 'settings' ? 'active' : ''}" data-sub="settings">
+          ${Icons.bell(14)} 预警与机器人通知
+        </span>
       </div>
     </div>
     <div id="manageSubContainer"></div>
@@ -785,7 +837,7 @@ function openAddWorkerModal() {
     <div class="form-group"><label><span class="req">*</span>手机号 (兼登录账号)</label><input type="tel" id="add_w_phone" maxlength="11" placeholder="11位手机号"></div>
     <div class="form-group"><label>擅长项目</label><input type="text" id="add_w_skill" placeholder="例如：水电暖通、多媒体设施"></div>
     <div class="form-group"><label>初始密码</label><input type="text" id="add_w_pwd" value="worker888"></div>
-    <button class="btn btn-ok" id="btnConfirmAddWorker">⚡ 确认创建师傅账号</button>
+    <button class="btn btn-ok" id="btnConfirmAddWorker">${Icons.bolt(16)} 确认创建师傅账号</button>
   `);
 
   document.getElementById('btnConfirmAddWorker').onclick = async () => {
@@ -889,7 +941,12 @@ async function loadSettingsForm() {
   const s = await request('/api/admin/settings', { token: adminToken });
   box.innerHTML = `
     <div class="card">
-      <div class="card-title"><span>🔔 SLA 时限预警与 Webhook 群机器人通知设置</span></div>
+      <div class="card-title">
+        <span style="display: flex; align-items: center; gap: 6px;">
+          ${Icons.bell(18, 'text-cyan')}
+          <span>SLA 时限预警与 Webhook 群机器人通知设置</span>
+        </span>
+      </div>
       <div class="grid-form">
         <div class="form-group">
           <label>系统名称</label>
@@ -988,7 +1045,12 @@ function renderQrView() {
   const options = appConfig.buildings.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
   return `
     <div class="card">
-      <div class="card-title"><span>📱 场所二维码生成器</span></div>
+      <div class="card-title">
+        <span style="display: flex; align-items: center; gap: 6px;">
+          ${Icons.qrCode(18, 'text-cyan')}
+          <span>场所二维码生成器</span>
+        </span>
+      </div>
       <div class="text-muted" style="margin-bottom: 12px;">张贴在教室、寝室或配电间门前，师生微信扫码自动识别地点并打开报修表单。</div>
       <div class="grid-form">
         <select id="qrBldgSelect">${options}</select>
