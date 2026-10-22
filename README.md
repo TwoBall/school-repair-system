@@ -1,6 +1,6 @@
-# 学校总务报修管理系统 - Cloudflare Pages + D1 纯云端版
+# 学校总务报修管理系统 - Cloudflare Pages + D1 + R2 纯云端版
 
-本分支专为 **Cloudflare Serverless 纯云端环境** 定制，利用 Cloudflare 官方永久免费服务，实现 **无需本地开电脑、7×24小时在线、0秒冷启动、永不休眠、数据持久化存储**。
+本分支专为 **Cloudflare Serverless 纯云端环境** 定制，利用 Cloudflare 官方永久免费服务，实现 **无需本地开电脑、7×24小时在线、0秒冷启动、永不休眠、工单与照片永久持久化存储**。
 
 ---
 
@@ -9,7 +9,7 @@
 - **前端与 CDN**：由 **Cloudflare Pages** 托管，全球免费 CDN 加速，自带免费 HTTPS 专属域名（`xxx.pages.dev`），支持自定义域名。
 - **后端服务**：由 **Cloudflare Pages Functions** 提供全套 RESTful API 与 Webhook 消息通知。
 - **持久化数据库**：基于 **Cloudflare D1**（底子即分布式 SQLite），免费提供 5GB 存储空间与每日 10 万次写操作，系统内置首次访问**自动建表与种子数据填充**。
-- **图片存储**：支持上传现场照片与完工照片（支持绑定 Cloudflare R2，未配置 R2 时自动转换为 Base64 存于 D1，零门槛立即可用）。
+- **现场图片存储**：基于 **Cloudflare R2**（S3 兼容对象存储），每月提供 **10GB 免费存储且 0 出网流量费**，专门保存现场报修照片与完工验收照片。
 
 ---
 
@@ -29,9 +29,7 @@
 
 ---
 
-### 步骤 2：创建 D1 数据库并绑定（关键步骤）
-系统数据永久保存在 Cloudflare D1 分布式数据库中：
-
+### 步骤 2：创建 D1 数据库并绑定（存放工单与配置）
 1. 在 Cloudflare 左侧导航栏点击 **存储和数据库 (Storage & Databases)** → 选择 **D1 SQL 数据库**。
 2. 点击 **创建数据库 (Create database)**：
    - 数据库名称填写：`school-repair-db`
@@ -46,11 +44,26 @@
 
 ---
 
-### 步骤 3：重新部署生效
+### 步骤 3：创建 R2 存储桶并绑定（存放现场照片）
+1. 在 Cloudflare 左侧导航栏点击 **存储和数据库 (Storage & Databases)** → 选择 **R2 对象存储**。
+2. 点击 **创建存储桶 (Create bucket)**：
+   - 存储桶名称填写：`school-repair-photos`
+   - 点击创建。
+3. 将 R2 存储桶绑定到 Pages 项目：
+   - 回到 **Workers 和 Pages** → 点击您的 Pages 项目。
+   - 切换到 **设置 (Settings)** → 点击左侧的 **函数 (Functions)**。
+   - 向下滚动找到 **R2 存储桶绑定 (R2 bucket bindings)**，点击 **添加绑定 (Add binding)**：
+     - **变量名称 (Variable name)**：填写 **`PHOTOS`**（系统亦兼容 `BUCKET`）
+     - **R2 存储桶 (R2 bucket)**：选择刚才创建的 **`school-repair-photos`**
+   - 点击 **保存 (Save)**。
+
+---
+
+### 步骤 4：重新部署生效
 1. 切换到项目的 **部署 (Deployments)** 标签页。
 2. 点击最新一条部署右侧的 **查看详情** 或 **重新部署 (Retry deployment)**。
 3. 部署完成后，点击 Cloudflare 自动分配的专属公网链接（如 `https://school-repair-system.pages.dev`）即可使用！
-   *(首次打开页面时，系统会自动初始化数据表及预设的维修师傅名单)*。
+   *(首次打开页面时，系统会自动初始化 D1 数据表及预设的维修师傅名单，上传的图片会自动直传至您的 R2 存储桶)*。
 
 ---
 
@@ -66,8 +79,8 @@
 
 ## 📁 本分支文件清单
 
-- `functions/api/[[route]].js`：Cloudflare Pages Functions 边缘 API 全局网关
+- `functions/api/[[route]].js`：Cloudflare Pages Functions 边缘 API 全局网关（集成 D1 + R2）
 - `public/index.html`：报修响应式前端单页应用
 - `public/js/qrcode.min.js`：离线二维码生成库
 - `schema.sql`：D1 数据库建表脚本定义
-- `wrangler.toml`：Cloudflare 配置文件
+- `wrangler.toml`：Cloudflare D1 与 R2 配置文件

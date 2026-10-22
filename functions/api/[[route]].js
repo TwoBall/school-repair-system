@@ -361,7 +361,7 @@ export async function onRequest(context) {
       const ext = file.name ? file.name.substring(file.name.lastIndexOf('.')) : '.jpg';
       const fileKey = `bx-${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`;
 
-      const bucket = env.PHOTOS || env.BUCKET;
+      const bucket = env.PHOTOS || env.BUCKET || env.R2;
       if (bucket) {
         // 如果绑定了 R2 存储桶，直接上传到 R2
         await bucket.put(fileKey, file.stream(), {
@@ -380,7 +380,7 @@ export async function onRequest(context) {
     // 从 R2 读取照片
     if (path.startsWith('/api/uploads/')) {
       const fileKey = path.replace('/api/uploads/', '');
-      const bucket = env.PHOTOS || env.BUCKET;
+      const bucket = env.PHOTOS || env.BUCKET || env.R2;
       if (!bucket) return fail('R2 bucket not bound', 404);
       const object = await bucket.get(fileKey);
       if (!object) return fail('File not found', 404);
@@ -389,6 +389,7 @@ export async function onRequest(context) {
       object.writeHttpMetadata(headers);
       headers.set('etag', object.httpEtag);
       headers.set('Cache-Control', 'public, max-age=31536000');
+      headers.set('Access-Control-Allow-Origin', '*');
       return new Response(object.body, { headers });
     }
 
