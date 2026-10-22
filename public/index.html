@@ -411,9 +411,9 @@ function formView(){
     '<div class="field">' +
       '<label>您的身份</label>' +
       '<div class="chips" id="f_who_chips">' +
-        '<span class="chip on" data-val="学生">学生</span>' +
-        '<span class="chip" data-val="教职工">教职工</span>' +
+        '<span class="chip on" data-val="教职工">教职工</span>' +
         '<span class="chip" data-val="职工">后勤职工</span>' +
+        '<span class="chip" data-val="学生">学生</span>' +
         '<span class="chip" data-val="访客">访客/其他</span>' +
       '</div>' +
     '</div>' +
@@ -1510,7 +1510,7 @@ function bindEvents(){
       var phone = document.getElementById('f_phone').value.trim();
       var cat = (document.querySelector('#f_cat_chips .chip.on') || {}).innerText || '水电照明';
       var urg = (document.querySelector('#f_urg_chips .chip.on') || {}).innerText || '普通';
-      var who = (document.querySelector('#f_who_chips .chip.on') || {}).innerText || '学生';
+      var who = (document.querySelector('#f_who_chips .chip.on') || {}).innerText || '教职工';
 
       if(!room){ toast('请填写楼层/房间号'); return; }
       if(!desc){ toast('请填写故障详情描述'); return; }
