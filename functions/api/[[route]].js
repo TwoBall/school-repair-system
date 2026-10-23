@@ -610,6 +610,32 @@ export async function onRequest(context) {
       return ok(true);
     }
 
+    // 驳回工单：管理端「驳回」按钮依赖此路由，缺了会报「未知 API」
+    if (path.endsWith('/reject') && method === 'POST') {
+      const id = path.split('/')[3];
+      const body = await request.json().catch(() => ({}));
+      const t = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
+      if (!t) return fail('工单不存在', 404);
+      if (t.status === 'closed') return fail('已验收关闭的工单不能驳回');
+
+      const note = typeof body.note === 'string' ? body.note.trim().slice(0, 100) : '';
+      let tl = [];
+      try { tl = JSON.parse(t.timeline || '[]'); } catch (e) {}
+      const now = Date.now();
+      tl.push({ t: now, by: '总务处', action: '工单驳回', note: note || '不在维修范围或重复报修' });
+
+      // 关闭时间一并落库，避免统计里出现"已驳回但未结束"的空档
+      await db.prepare('UPDATE tickets SET status = ?, closedAt = ?, timeline = ? WHERE id = ?')
+        .bind('rejected', now, JSON.stringify(tl), id).run();
+
+      const updated = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
+      const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
+      const sMap = {};
+      sRows.forEach((r) => (sMap[r.key] = r.value));
+      sendWebhook(sMap, 'ticket_reject', { ...formatTicket(updated, sMap), note }).catch(() => {});
+      return ok(formatTicket(updated, sMap), '已驳回该工单');
+    }
+
     // 催单
     if (path.endsWith('/remind') && method === 'POST') {
       const id = path.split('/')[3];
