@@ -56,6 +56,7 @@ async function init() {
 /**
  * 二维码带入地点。
  * 只带入「楼栋 + 房间」两项，不碰故障信息——卡片副标题必须和这个行为一致。
+ * 房间走「追加到 chips」而不是覆盖输入框：扫码后再手动补几间不会把扫码结果冲掉。
  * 楼栋不在当前字典里时不静默失败：明确提示手动选择。
  */
 function applyQrPlace(bldg, room) {
@@ -66,7 +67,19 @@ function applyQrPlace(bldg, room) {
   const known = Boolean(sel) && Array.from(sel.options).some((o) => o.value === bldg);
 
   if (sel && known) sel.value = bldg;
-  if (roomEl && room) roomEl.value = room;
+  if (room) {
+    const { rooms } = parseRooms(room);
+    if (rooms.length) {
+      mergeRooms(rooms);
+      paintRoomChips();
+      if (roomEl) roomEl.value = '';
+      scheduleDraftSave();
+    } else if (roomEl) {
+      // 解析不出来（比如整段文字超长）时退回填进输入框，让用户自己改
+      roomEl.value = room;
+      syncRoomAddBtn();
+    }
+  }
 
   const host = document.getElementById('qrHintHost');
   if (!host) return;
@@ -161,8 +174,13 @@ function renderFormView() {
             </div>
           </div>
           <div class="field">
-            <label class="label" for="f_room"><span class="req">*</span>楼层 / 房间号</label>
-            <input class="control" type="text" id="f_room" placeholder="例如：305教室、412宿舍" autocomplete="off">
+            <label class="label" for="f_room"><span class="req">*</span>楼层 / 房间号<span class="opt">可一次报多间</span></label>
+            <div class="room-input-row">
+              <input class="control" type="text" id="f_room" placeholder="例如：305教室，或 305、306、307" autocomplete="off">
+              <button class="btn btn-outline shrink-0" type="button" id="btnRoomAdd" hidden>加入</button>
+            </div>
+            <div class="room-chips" id="f_room_chips" role="group" aria-label="已加入的房间"></div>
+            <div class="room-hint" id="f_room_hint"></div>
           </div>
         </div>
       </section>
@@ -284,7 +302,8 @@ function readDraft() {
 }
 
 function draftHasContent(d) {
-  return Boolean(d.room || d.desc || d.reporter || d.phone || (d.photos && d.photos.length));
+  const rooms = Array.isArray(d.rooms) ? d.rooms : (d.room ? [d.room] : []);
+  return Boolean(rooms.length || d.desc || d.reporter || d.phone || (d.photos && d.photos.length));
 }
 
 function clearFormDraft() {
@@ -301,7 +320,8 @@ function collectFormDraft() {
   return {
     ts: Date.now(),
     bldg: val('f_bldg'),
-    room: val('f_room'),
+    rooms: [...roomList], // 已加入 chips 的房间
+    room: val('f_room'), // 输入框里还没加入的内容，一并存下来
     desc: val('f_desc'),
     reporter: val('f_reporter'),
     phone: val('f_phone'),
@@ -340,6 +360,9 @@ function resetRepairForm() {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
+  roomList = [];
+  paintRoomChips();
+  syncRoomAddBtn();
   uploadedPhotos = [];
   renderPhotoGrid();
   Object.keys(FIELD_RULES).forEach(clearFieldError);
@@ -398,7 +421,13 @@ function restoreFormDraft(d) {
     if (el) el.value = v;
   };
   setVal('f_bldg', d.bldg);
-  setVal('f_room', d.room);
+  // 草稿兼容：新格式存 rooms 数组；旧草稿只有 room 字符串，按分隔符拆一遍再回填
+  const draftRooms = Array.isArray(d.rooms) ? [...d.rooms] : parseRooms(d.room || '').rooms;
+  roomList = [];
+  mergeRooms(draftRooms);
+  paintRoomChips();
+  setVal('f_room', typeof d.room === 'string' ? d.room : '');
+  syncRoomAddBtn();
   setVal('f_desc', d.desc);
   setVal('f_reporter', d.reporter);
   setVal('f_phone', d.phone);
@@ -458,7 +487,118 @@ function paintDraftBar(state) {
   }
 }
 
-// ----------------- 重复报修提醒（#17） -----------------
+// ----------------- 多房间录入 -----------------
+// 一条工单只能承载一个房间（派工/打印/CSV/完工逐间流转都依赖单值 room），
+// 所以多房间由前端拆成「每间一条工单」，再用同一个 batchToken 串成一批。
+const MAX_ROOMS = 20; // 一个班主任一次最多报 20 间，超过容易是误粘贴整列数据
+let roomList = []; // 已录入的房间（保留用户原始写法，判重时再归一化）
+
+/** 把一段文字拆成房间数组：支持 、 , ， ; / 空格 换行。不做区间展开，305-310 原样保留并提示 */
+function parseRooms(raw) {
+  const text = String(raw || '').replace(/[、,，;；\/\n\r\t|]+/g, ' ');
+  const seen = new Set();
+  const rooms = [];
+  let invalid = 0;
+  text.split(/\s+/).forEach((piece) => {
+    const s = piece.trim();
+    if (!s) return;
+    // 单间最长 20 字符，超长基本是整段描述被误粘贴进来
+    if (s.length > 20) { invalid += 1; return; }
+    const key = normRoom(s);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    rooms.push(s);
+  });
+  return { rooms, invalid };
+}
+
+/** 合并新解析出的房间；返回 { added, dup, overflow } */
+function mergeRooms(list) {
+  const seen = new Set(roomList.map((r) => normRoom(r)));
+  let added = 0;
+  let dup = 0;
+  let overflow = 0;
+  list.forEach((r) => {
+    const key = normRoom(r);
+    if (!key) return;
+    if (seen.has(key)) { dup += 1; return; }
+    if (roomList.length >= MAX_ROOMS) { overflow += 1; return; }
+    seen.add(key);
+    roomList.push(r);
+    added += 1;
+  });
+  return { added, dup, overflow };
+}
+
+function roomKeys() {
+  return roomList.map((r) => normRoom(r)).filter(Boolean);
+}
+
+function paintRoomChips() {
+  const host = document.getElementById('f_room_chips');
+  const hint = document.getElementById('f_room_hint');
+  if (!host) return;
+
+  host.innerHTML = roomList
+    .map((r, i) => `
+      <span class="room-chip">
+        <span class="room-chip-name">${escapeHtml(r)}</span>
+        <button class="room-chip-x" type="button" data-act="room-remove" data-idx="${i}" aria-label="移除 ${escapeHtml(r)}">${icon('close', 12)}</button>
+      </span>`)
+    .join('');
+
+  if (hint) {
+    if (roomList.length > 1) {
+      hint.innerHTML = `<span class="room-hint-ok">${icon('layers', 13)}将生成 <strong>${roomList.length}</strong> 条工单（每间一条，便于分别派工与完工）</span>`;
+    } else if (roomList.length === 1) {
+      hint.innerHTML = `<span class="room-hint-ok">将生成 1 条工单</span>`;
+    } else {
+      hint.innerHTML = '';
+    }
+  }
+}
+
+/** 把输入框里的内容解析并加入 chips，然后清空输入框 */
+function commitRoomInput() {
+  const input = document.getElementById('f_room');
+  if (!input) return;
+  const { rooms, invalid } = parseRooms(input.value);
+  if (!rooms.length && !invalid) return;
+
+  const { added, dup, overflow } = mergeRooms(rooms);
+  const msgs = [];
+  if (added) msgs.push(`已加入 ${added} 间`);
+  if (dup) msgs.push(`${dup} 间重复，已略过`);
+  if (overflow) msgs.push(`最多一次 ${MAX_ROOMS} 间，多出的 ${overflow} 间未加入`);
+  if (invalid) msgs.push(`${invalid} 项过长被忽略`);
+  if (!added && !dup && !overflow && !invalid) msgs.push('没有识别到有效房间号');
+
+  input.value = '';
+  syncRoomAddBtn();
+  paintRoomChips();
+  scheduleDraftSave();
+  scheduleDupCheck();
+  if (msgs.length) toast(msgs.join('，'));
+}
+
+function removeRoomAt(idx) {
+  if (!Number.isInteger(idx) || idx < 0 || idx >= roomList.length) return;
+  roomList.splice(idx, 1);
+  paintRoomChips();
+  // 删到列表为空时，输入框那个红字错误要跟着一起清掉，否则会留一条过期提示
+  if (!roomList.length) validateField('f_room');
+  scheduleDraftSave();
+  scheduleDupCheck();
+}
+
+/** 输入框有内容时显示「加入」按钮，提示可以按分隔符批量填 */
+function syncRoomAddBtn() {
+  const btn = document.getElementById('btnRoomAdd');
+  const input = document.getElementById('f_room');
+  if (!btn || !input) return;
+  btn.hidden = !input.value.trim();
+}
+
 // 前端侧的「疑似重复」判断：同一手机号近 30 天内、同一楼栋 + 同一房间 + 同一故障类别，
 // 且工单尚未走完（受理中/派工/维修中/待验收），即提示用户先确认，避免重复派工。
 const DUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -503,6 +643,21 @@ function findDuplicates(list, { bldg, room, category }) {
   });
 }
 
+/**
+ * 多房间判重：返回 { [归一化房间]: 命中的工单数组 }。
+ * 只统计当前类别下、每间房各自的命中，互不牵连——一间重复不应该拦住其他间提交。
+ */
+function findDuplicatesForRooms(list, { bldg, category, rooms }) {
+  const map = new Map();
+  rooms.forEach((room) => {
+    const key = normRoom(room);
+    if (!key) return;
+    const hits = findDuplicates(list, { bldg, room, category });
+    if (hits.length) map.set(key, hits);
+  });
+  return map;
+}
+
 function paintDupBar() {
   const host = document.getElementById('dupBarHost');
   if (!host) return;
@@ -510,25 +665,72 @@ function paintDupBar() {
     host.innerHTML = '';
     return;
   }
-  const rows = dupHits.map((t) => `
-      <div class="dup-row">
-        <span class="badge ${(STATUS_MAP[t.status] || {}).cls || 'b-pending'}">${escapeHtml((STATUS_MAP[t.status] || {}).label || t.status)}</span>
-        <span class="dup-no">${escapeHtml(t.id)}</span>
-        <span class="dup-when">${escapeHtml(formatShortTime(t.createdAt))}</span>
-        <button class="poll-refresh" type="button" data-act="dup-detail" data-id="${escapeHtml(t.id)}">查看进度</button>
-      </div>`).join('');
+  const bldgName = escapeHtml(document.getElementById('f_bldg')?.value || '');
+  const catName = escapeHtml(currentCategory());
+
+  // 按房间分组展示：多房间批量报修时，用户需要清楚知道是哪几间已有人报过
+  const groups = new Map();
+  dupHits.forEach((t) => {
+    const key = normRoom(t.room) || '未知房间';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  });
+
+  const groupHtml = Array.from(groups.entries())
+    .map(([key, list]) => {
+      const rows = list.map((t) => `
+        <div class="dup-row">
+          <span class="badge ${(STATUS_MAP[t.status] || {}).cls || 'b-pending'}">${escapeHtml((STATUS_MAP[t.status] || {}).label || t.status)}</span>
+          <span class="dup-no">${escapeHtml(t.id)}</span>
+          <span class="dup-when">${escapeHtml(formatShortTime(t.createdAt))}</span>
+          <button class="poll-refresh" type="button" data-act="dup-detail" data-id="${escapeHtml(t.id)}">查看进度</button>
+        </div>`).join('');
+      const label = list[0]?.room || key;
+      return `
+        <div class="dup-group">
+          <div class="dup-group-head">${icon('mapPin', 13)}<strong>${escapeHtml(label)}</strong><span class="dup-group-num">${list.length} 条</span></div>
+          ${rows}
+        </div>`;
+    })
+    .join('');
+
+  const roomCount = roomsWithDup();
+  const scope = roomList.length > 1
+    ? `${bldgName} 本批 ${roomList.length} 间中有 <strong>${roomCount}</strong> 间`
+    : `${bldgName} ${escapeHtml(roomList[0] || '')}`;
+
   host.innerHTML = `
     <div class="alert alert-warn mb-12 col gap-6 start" role="status">
       ${icon('alert', 16)}
       <div class="grow">
         <strong>疑似重复报修</strong>
-        <div class="mt-4">${escapeHtml(document.getElementById('f_bldg')?.value || '')}
-          ${escapeHtml(document.getElementById('f_room')?.value.trim() || '')} 的「${escapeHtml(currentCategory())}」
-          近 30 天内已有 ${dupHits.length} 条未完成的报修，重复提交会占用维修排期。</div>
-        <div class="dup-list">${rows}</div>
+        <div class="mt-4">${scope} 的「${catName}」近 30 天内已有未完成的报修，重复提交会占用维修排期。</div>
+        <div class="dup-list">${groupHtml}</div>
       </div>
       <button class="btn btn-sm btn-outline shrink-0" type="button" data-act="dup-dismiss">知道了</button>
     </div>`;
+}
+
+/** 命中的房间去重计数 */
+function roomsWithDup() {
+  return new Set(dupHits.map((t) => normRoom(t.room))).size;
+}
+
+/** 当前生效的房间列表：输入框里还没「加入」的内容也算上，避免用户漏点按钮就提交 */
+function effectiveRooms() {
+  const input = document.getElementById('f_room');
+  const pending = parseRooms(input ? input.value : '').rooms;
+  if (!pending.length) return [...roomList];
+  const seen = new Set(roomList.map((r) => normRoom(r)));
+  const all = [...roomList];
+  pending.forEach((r) => {
+    const key = normRoom(r);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      all.push(r);
+    }
+  });
+  return all;
 }
 
 async function runDupCheck() {
@@ -538,12 +740,12 @@ async function runDupCheck() {
   if (!bldgEl || !roomEl || !phoneEl) return;
 
   const bldg = bldgEl.value;
-  const room = roomEl.value.trim();
+  const rooms = effectiveRooms();
   const phone = phoneEl.value.trim();
   const category = currentCategory();
 
-  // 手机号或房间号不完整时先清掉旧提示，避免误导
-  if (!/^1\d{10}$/.test(phone) || room.length < 2) {
+  // 手机号或房间列表不完整时先清掉旧提示，避免误导
+  if (!/^1\d{10}$/.test(phone) || !rooms.length) {
     dupHits = [];
     dupDismissed = false;
     dupPhoneCache.delete(phone);
@@ -553,7 +755,8 @@ async function runDupCheck() {
 
   try {
     const list = await fetchRecentTickets(phone);
-    dupHits = findDuplicates(list, { bldg, room, category });
+    const map = findDuplicatesForRooms(list, { bldg, category, rooms });
+    dupHits = Array.from(map.values()).flat();
     dupDismissed = false;
     paintDupBar();
   } catch {
@@ -586,9 +789,14 @@ const touched = new Set();
 
 const FIELD_RULES = {
   f_room: (v) => {
-    const s = v.trim();
-    if (!s) return '请填写楼层 / 房间号';
-    if (s.length < 2) return '房间号太短，请填写完整位置';
+    // 多房间改造后，输入框本身可以为空（房间已进 chips），校验以 chips + 输入框合并结果为准
+    const rooms = effectiveRooms();
+    if (!rooms.length) {
+      return v.trim() ? '房间号太短，请填写完整位置' : '请填写楼层 / 房间号';
+    }
+    if (rooms.length > MAX_ROOMS) return `一次最多报 ${MAX_ROOMS} 间，请分次提交`;
+    const bad = rooms.find((r) => r.trim().length < 2);
+    if (bad !== undefined) return `「${bad}」太短，请填写完整位置`;
     return '';
   },
   f_desc: (v) => {
@@ -685,14 +893,60 @@ function bindFormEvents() {
   });
   const bldg = document.getElementById('f_bldg');
   if (bldg) bldg.addEventListener('change', () => { scheduleDraftSave(); scheduleDupCheck(); });
-  // 房间号与手机号填够位数后才开始查重，边填边打接口没必要
-  ['f_room', 'f_phone'].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('blur', scheduleDupCheck);
-  });
+
+  // 房间号：回车/失焦/点「加入」都把它并入 chips；输入变化时按内容显示「加入」按钮
+  const roomInput = document.getElementById('f_room');
+  const roomAddBtn = document.getElementById('btnRoomAdd');
+  if (roomInput) {
+    roomInput.addEventListener('input', syncRoomAddBtn);
+    roomInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault(); // 别让回车触发 form 提交
+        commitRoomInput();
+        validateField('f_room', true);
+      }
+    });
+    roomInput.addEventListener('blur', () => {
+      // 失焦时若输入框里是「305、306」这种多值，直接并入；单个值也并入，减少一次点击
+      if (roomInput.value.trim()) {
+        commitRoomInput();
+        validateField('f_room', true);
+      }
+      scheduleDupCheck();
+    });
+    roomInput.addEventListener('paste', () => {
+      // 等粘贴内容进 DOM 再判断，粘贴多值时直接并入
+      setTimeout(() => {
+        if (/[、,，;；\/\n\t|]/.test(roomInput.value)) commitRoomInput();
+        else syncRoomAddBtn();
+      }, 0);
+    });
+  }
+  if (roomAddBtn) {
+    roomAddBtn.onclick = () => {
+      commitRoomInput();
+      validateField('f_room', true);
+    };
+  }
+  // 房间 chips 用事件委托，避免每次重绘都重新绑。
+  // 注意：room-remove 刻意不放进全局 delegateActions —— 它在 #f_room_chips 上就地处理，
+  // 因为 chips 会频繁重绘，就地监听比全局委托更容易保证只响应自己容器里的点击。
+  const roomChipsHost = document.getElementById('f_room_chips');
+  if (roomChipsHost) {
+    roomChipsHost.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-act="room-remove"]');
+      if (!btn) return;
+      removeRoomAt(Number(btn.dataset.idx));
+    });
+  }
+
+  // 手机号填够位数后才开始查重，边填边打接口没必要
+  const phoneEl = document.getElementById('f_phone');
+  if (phoneEl) phoneEl.addEventListener('blur', scheduleDupCheck);
 
   bindPhotoInput();
   bindSubmit();
+  paintRoomChips();
   runDupCheck(); // 草稿回填后可能已经构成重复，进入即查一次
 }
 
@@ -805,7 +1059,13 @@ function bindSubmit() {
     }
 
     const bldg = document.getElementById('f_bldg').value;
-    const room = document.getElementById('f_room').value.trim();
+    // 输入框里没点「加入」的内容也要算进来，否则用户填完直接点提交会漏报
+    const rooms = effectiveRooms();
+    if (!rooms.length) {
+      toast('请先填写房间号');
+      return;
+    }
+
     const desc = document.getElementById('f_desc').value.trim();
     const reporter = document.getElementById('f_reporter').value.trim();
     const phone = document.getElementById('f_phone').value.trim();
@@ -817,9 +1077,11 @@ function bindSubmit() {
     // 加 3s 上限，接口慢也不能把用户卡在提交这一步。
     await Promise.race([runDupCheck().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]);
     if (dupHits.length && !dupDismissed) {
+      const dupRooms = Array.from(new Set(dupHits.map((t) => t.room))).join('、');
+      const extra = rooms.length > 1 ? `（本批共 ${rooms.length} 间，仅提示已报过的房间，其余照常提交）` : '';
       const goon = await confirmDialog({
         title: '确认仍然提交？',
-        desc: `${bldg} ${room} 的「${category}」近 30 天内已有 ${dupHits.length} 条未完成的报修（${dupHits.map((t) => t.id).join('、')}）。继续提交会生成重复工单，建议先查看原工单进度。`,
+        desc: `${bldg} ${dupRooms} 的「${category}」近 30 天内已有 ${dupHits.length} 条未完成的报修（${dupHits.map((t) => t.id).join('、')}）。继续提交会生成重复工单，建议先查看原工单进度。${extra}`,
         okText: '仍然提交',
         cancelText: '返回修改',
         danger: true,
@@ -827,25 +1089,86 @@ function bindSubmit() {
       if (!goon) return;
     }
 
-    await runAction(btnSubmit, '正在提交…', async () => {
-      const created = await request('/api/tickets', {
-        method: 'POST',
-        body: { building: bldg, room, category, urgency, desc, reporter, phone, identity, photos: uploadedPhotos },
+    // 多房间时先确认，避免用户误粘贴一大串就生成几十条工单
+    if (rooms.length > 1) {
+      const multi = await confirmDialog({
+        title: `确认生成 ${rooms.length} 条工单？`,
+        desc: `将按房间拆分为 ${rooms.length} 条独立工单（同一批次，便于分别派工与逐间完工）：${rooms.join('、')}`,
+        okText: `提交 ${rooms.length} 条`,
+        cancelText: '返回修改',
       });
+      if (!multi) return;
+    }
 
-      myPhone = phone;
-      localStorage.setItem('bx_reporter_phone', phone);
-      uploadedPhotos = [];
-      clearFormDraft();
-      touched.clear();
-      clearTemplateSelection();
-      // 工单刚生成，本机缓存已经过期，下次进表单必须重新拉列表比对
-      dupPhoneCache.delete(phone);
-      dupHits = [];
-      dupDismissed = false;
+    // 批次号：同一次提交的所有房间共用，管理端/师傅端据此归组
+    const batchToken = rooms.length > 1 ? `B${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}` : '';
+    const failed = [];
+    const created = [];
 
-      toast(`报修提交成功，工单号 ${created.id}`, () => switchTab('mine'));
+    await runAction(btnSubmit, rooms.length > 1 ? `正在提交 1/${rooms.length}…` : '正在提交…', async () => {
+      for (let i = 0; i < rooms.length; i += 1) {
+        if (rooms.length > 1) {
+          btnSubmit.textContent = `正在提交 ${i + 1}/${rooms.length}…`;
+        }
+        try {
+          const t = await request('/api/tickets', {
+            method: 'POST',
+            body: {
+              building: bldg,
+              room: rooms[i],
+              category,
+              urgency,
+              desc,
+              reporter,
+              phone,
+              identity,
+              photos: uploadedPhotos,
+              batchToken,
+              batchSize: rooms.length,
+              // 幂等键：同一次提交的同一间房，重试也不会生成第二条
+              clientToken: batchToken ? `${batchToken}-${i}` : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`,
+            },
+          });
+          created.push(t);
+        } catch (err) {
+          failed.push({ room: rooms[i], msg: err.message || '提交失败' });
+        }
+      }
     });
+
+    if (!created.length) {
+      toast(`提交失败：${failed[0]?.msg || '请稍后重试'}`);
+      return;
+    }
+
+    myPhone = phone;
+    localStorage.setItem('bx_reporter_phone', phone);
+    uploadedPhotos = [];
+    touched.clear();
+    clearTemplateSelection();
+    // 工单刚生成，本机缓存已经过期，下次进表单必须重新拉列表比对
+    dupPhoneCache.delete(phone);
+    dupHits = [];
+    dupDismissed = false;
+
+    if (failed.length) {
+      // 部分失败：成功的已入库，失败的留在 chips 里让用户再点一次提交（幂等键保证成功的不会重复）
+      roomList = failed.map((f) => f.room);
+      paintRoomChips();
+      scheduleDraftSave();
+      toast(`已提交 ${created.length} 条，${failed.length} 间失败（${failed.map((f) => f.room).join('、')}），可直接再次提交`);
+      return;
+    }
+
+    roomList = [];
+    paintRoomChips();
+    clearFormDraft();
+
+    if (created.length > 1) {
+      toast(`已生成 ${created.length} 条工单：${created.map((t) => t.id).join('、')}`, () => switchTab('mine'));
+    } else {
+      toast(`报修提交成功，工单号 ${created[0].id}`, () => switchTab('mine'));
+    }
   };
 }
 
@@ -998,10 +1321,17 @@ async function loadMyTickets({ silent = false } = {}) {
   }
 }
 
+/** 批次徽标：同一次提交的多间房共用 batchToken，界面上标出「同批 N 间」便于理解 */
+function batchBadgeHtml(t) {
+  if (!t || !t.batchToken || (t.batchSize || 1) < 2) return '';
+  return `<span class="batch-badge" title="与同批次的其它房间一起提交">${icon('layers', 11)}同批 ${t.batchSize} 间</span>`;
+}
+
 function renderTicketCard(t, isNew = false) {
   const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
   const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">${icon('alert', 12)}超时</span>` : '';
   const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">${icon('bell', 12)}催单 ${t.remindCount}</span>` : '';
+  const batchBadge = batchBadgeHtml(t);
 
   const photosHtml = t.photos && t.photos.length > 0
     ? `<div class="photos-grid">${t.photos.map((p, i) => `<div class="photo-item sm"><img src="${escapeHtml(p)}" alt="现场照片 ${i + 1}" data-act="view-photo" data-src="${escapeHtml(p)}" role="button" tabindex="0"></div>`).join('')}</div>`
@@ -1019,7 +1349,7 @@ function renderTicketCard(t, isNew = false) {
     <article class="ticket-card ${t.isTimeout ? 'is-timeout' : ''}${isNew ? ' is-new' : ''}">
       <div class="ticket-head">
         <span class="ticket-no">${escapeHtml(t.id)}</span>
-        <div class="badge-row">${remindBadge}${timeoutBadge}<span class="badge ${st.cls}">${st.label}</span></div>
+        <div class="badge-row">${batchBadge}${remindBadge}${timeoutBadge}<span class="badge ${st.cls}">${st.label}</span></div>
       </div>
       <h3 class="ticket-title">${icon('mapPin', 15)}${escapeHtml(t.building)} ${escapeHtml(t.room)}</h3>
       <div class="ticket-meta">
@@ -1118,6 +1448,7 @@ const openDetail = async (id) => {
         <div class="row gap-8 wrap mb-12">
           <span class="badge ${st.cls}">${st.label}</span>
           <strong class="fs-16">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong>
+          ${batchBadgeHtml(t)}
         </div>
         <div class="soft-block">
           <div class="info-list">

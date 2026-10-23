@@ -29,8 +29,12 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS workers (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT NOT NULL, skill TEXT, phone TEXT, active INTEGER DEFAULT 1, createdAt INTEGER);
 CREATE TABLE IF NOT EXISTS buildings (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, sortOrder INTEGER DEFAULT 0, active INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, sortOrder INTEGER DEFAULT 0, active INTEGER DEFAULT 1);
-CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, day TEXT, createdAt INTEGER, building TEXT, room TEXT, category TEXT, urgency TEXT, desc TEXT, reporter TEXT, phone TEXT, identity TEXT, photos TEXT, status TEXT, assignee TEXT, timeline TEXT, rating TEXT, completedAt INTEGER, closedAt INTEGER, result TEXT, material TEXT, materialSource TEXT, finishPhotos TEXT, lastRemindAt INTEGER DEFAULT 0, remindCount INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, day TEXT, createdAt INTEGER, building TEXT, room TEXT, category TEXT, urgency TEXT, desc TEXT, reporter TEXT, phone TEXT, identity TEXT, photos TEXT, status TEXT, assignee TEXT, timeline TEXT, rating TEXT, completedAt INTEGER, closedAt INTEGER, result TEXT, material TEXT, materialSource TEXT, finishPhotos TEXT, lastRemindAt INTEGER DEFAULT 0, remindCount INTEGER DEFAULT 0, batchToken TEXT, batchSize INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS ticket_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, ticketId TEXT NOT NULL, senderRole TEXT NOT NULL, senderName TEXT NOT NULL, content TEXT NOT NULL, createdAt INTEGER NOT NULL);
+-- 提交幂等表：同一个 clientToken 只会生成一条工单，网络重试不会出双份
+CREATE TABLE IF NOT EXISTS ticket_dedup (clientToken TEXT PRIMARY KEY, ticketId TEXT NOT NULL, createdAt INTEGER);
+CREATE INDEX IF NOT EXISTS idx_dedup_createdAt ON ticket_dedup(createdAt);
+CREATE INDEX IF NOT EXISTS idx_tickets_batch ON tickets(batchToken);
 `;
 
 // 楼栋字典（编号 + 用途）。A=教学楼 / B=实训楼 / C=宿舍
@@ -225,6 +229,8 @@ function formatTicket(t, settings = {}) {
     finishPhotos,
     material: t.material || '',
     materialSource: t.materialSource || '',
+    batchToken: t.batchToken || '',
+    batchSize: t.batchSize || 1,
     isTimeout,
     timeoutReason,
   };
@@ -433,6 +439,7 @@ export async function onRequest(context) {
       const urgency = url.searchParams.get('urgency');
       const building = url.searchParams.get('building');
       const category = url.searchParams.get('category');
+      const batchToken = url.searchParams.get('batchToken');
 
       let sql = 'SELECT * FROM tickets WHERE 1=1';
       const params = [];
@@ -442,6 +449,7 @@ export async function onRequest(context) {
       if (urgency && urgency !== 'all') { sql += ' AND urgency = ?'; params.push(urgency); }
       if (building && building !== 'all') { sql += ' AND building = ?'; params.push(building); }
       if (category && category !== 'all') { sql += ' AND category = ?'; params.push(category); }
+      if (batchToken) { sql += ' AND batchToken = ?'; params.push(batchToken); }
       if (search) {
         sql += ' AND (id LIKE ? OR desc LIKE ? OR room LIKE ? OR reporter LIKE ? OR assignee LIKE ?)';
         const s = `%${search}%`;
@@ -477,6 +485,22 @@ export async function onRequest(context) {
       const { building, room, category, urgency, desc, reporter, phone, identity, photos } = body;
       if (!room || !desc || !reporter || !phone) return fail('请填写必填项');
 
+      // 幂等：同一个 clientToken 重复提交（网络重试、用户连点）只认第一条
+      const clientToken = typeof body.clientToken === 'string' ? body.clientToken.trim().slice(0, 64) : '';
+      const batchToken = typeof body.batchToken === 'string' ? body.batchToken.trim().slice(0, 64) : '';
+      const batchSize = Math.max(1, Math.min(50, parseInt(body.batchSize, 10) || 1));
+      const settingsRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
+      const sMap = {};
+      settingsRows.forEach((r) => (sMap[r.key] = r.value));
+
+      if (clientToken) {
+        const dup = await db.prepare('SELECT ticketId FROM ticket_dedup WHERE clientToken = ?').bind(clientToken).first();
+        if (dup) {
+          const existing = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(dup.ticketId).first();
+          if (existing) return ok(formatTicket(existing, sMap), '该报修已提交过');
+        }
+      }
+
       const now = Date.now();
       const d = new Date();
       const p = (v) => (v < 10 ? '0' : '') + v;
@@ -490,17 +514,30 @@ export async function onRequest(context) {
         { t: now, by: '系统', action: '系统受理', note: '报修单已录入，等待总务处派工' },
       ];
 
-      await db.prepare(`
-        INSERT INTO tickets (id, day, createdAt, building, room, category, urgency, desc, reporter, phone, identity, photos, status, assignee, timeline, rating, completedAt, closedAt, result, finishPhotos, lastRemindAt, remindCount)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, NULL, NULL, '', '[]', 0, 0)
-      `).bind(id, day, now, building || '教学楼A栋', room, category || '水电照明', urgency || '普通', desc, reporter, phone, identity || '学生', JSON.stringify(photos || []), JSON.stringify(timeline)).run();
+      const stmts = [
+        db.prepare(`
+          INSERT INTO tickets (id, day, createdAt, building, room, category, urgency, desc, reporter, phone, identity, photos, status, assignee, timeline, rating, completedAt, closedAt, result, finishPhotos, lastRemindAt, remindCount, batchToken, batchSize)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, NULL, NULL, '', '[]', 0, 0, ?, ?)
+        `).bind(id, day, now, building || '教学楼A栋', room, category || '水电照明', urgency || '普通', desc, reporter, phone, identity || '学生', JSON.stringify(photos || []), JSON.stringify(timeline), batchToken || null, batchSize),
+      ];
+      // clientToken 与工单同批写入；若并发下被别的请求抢先插入，INSERT OR IGNORE 不报错，后续查回原工单
+      if (clientToken) {
+        stmts.push(db.prepare('INSERT OR IGNORE INTO ticket_dedup (clientToken, ticketId, createdAt) VALUES (?, ?, ?)').bind(clientToken, id, now));
+      }
+      await db.batch(stmts);
 
       const created = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
+      // 并发兜底：本次插入其实没进库（clientToken 被抢注），返回已存在的那条
+      if (clientToken && !created) {
+        const dup = await db.prepare('SELECT ticketId FROM ticket_dedup WHERE clientToken = ?').bind(clientToken).first();
+        if (dup) {
+          const existing = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(dup.ticketId).first();
+          if (existing) return ok(formatTicket(existing, sMap), '该报修已提交过');
+        }
+        return fail('提交失败，请重试', 500);
+      }
 
       // 发送通知
-      const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
-      const sMap = {};
-      sRows.forEach((r) => (sMap[r.key] = r.value));
       sendWebhook(sMap, 'ticket_create', formatTicket(created, sMap)).catch(() => {});
 
       return ok(formatTicket(created, sMap));

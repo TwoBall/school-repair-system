@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS tickets (
   materialSource TEXT,
   finishPhotos TEXT,
   lastRemindAt INTEGER DEFAULT 0,
-  remindCount INTEGER DEFAULT 0
+  remindCount INTEGER DEFAULT 0,
+  batchToken TEXT,
+  batchSize INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS ticket_comments (
@@ -67,8 +69,17 @@ CREATE TABLE IF NOT EXISTS ticket_comments (
   createdAt INTEGER NOT NULL
 );
 
+-- 提交幂等表：同一个 clientToken 只会生成一条工单，网络重试不会出双份
+CREATE TABLE IF NOT EXISTS ticket_dedup (
+  clientToken TEXT PRIMARY KEY,
+  ticketId TEXT NOT NULL,
+  createdAt INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_tickets_phone ON tickets(phone);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_assignee ON tickets(assignee);
 CREATE INDEX IF NOT EXISTS idx_tickets_createdAt ON tickets(createdAt);
+CREATE INDEX IF NOT EXISTS idx_tickets_batch ON tickets(batchToken);
+CREATE INDEX IF NOT EXISTS idx_dedup_createdAt ON ticket_dedup(createdAt);
 

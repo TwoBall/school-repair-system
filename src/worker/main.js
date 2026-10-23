@@ -288,6 +288,10 @@ function renderTicketCard(t, isNew = false) {
   const st = STATUS_MAP[t.status] || { label: t.status, cls: 'b-pending' };
   const timeoutBadge = t.isTimeout ? `<span class="badge b-timeout">${icon('alert', 12)}超时</span>` : '';
   const remindBadge = t.remindCount > 0 ? `<span class="badge b-remind">${icon('bell', 12)}催单 ${t.remindCount}</span>` : '';
+  // 多房间同批提交：提示师傅这是一批里的第几条，方便一次跑完同层同批的房间
+  const batchBadge = t.batchToken && (t.batchSize || 1) > 1
+    ? `<span class="batch-badge" title="与同批次的其它房间一起提交">${icon('layers', 11)}同批 ${t.batchSize} 间</span>`
+    : '';
 
   let actionsHtml = `<button class="btn btn-sm btn-outline" type="button" data-act="w-detail" data-id="${escapeHtml(t.id)}">${icon('eye', 14)}详情</button>`;
   if (t.status === 'assigned') {
@@ -306,9 +310,10 @@ function renderTicketCard(t, isNew = false) {
     <article class="ticket-card ${t.isTimeout ? 'is-timeout' : ''}${isNew ? ' is-new' : ''}">
       <div class="ticket-head">
         <span class="ticket-no">${escapeHtml(t.id)}</span>
-        <div class="badge-row">${remindBadge}${timeoutBadge}<span class="badge ${st.cls}">${st.label}</span></div>
+        <div class="badge-row">${batchBadge}${remindBadge}${timeoutBadge}<span class="badge ${st.cls}">${st.label}</span></div>
       </div>
       <h3 class="ticket-title">${icon('mapPin', 15)}${escapeHtml(t.building)} ${escapeHtml(t.room)}</h3>
+      ${t.batchToken && (t.batchSize || 1) > 1 ? `<div class="room-hint room-hint-batch">${icon('info', 12)}本条属同批报修，同批共 ${t.batchSize} 间，需逐间完工</div>` : ''}
       <div class="ticket-meta">
         <span class="meta-item">${categoryIcon(t.category, 13)}${escapeHtml(t.category)}</span>
         <span class="meta-item ${t.urgency === '紧急' ? 'urgent strong' : ''}">${icon('alert', 13)}${escapeHtml(t.urgency)}</span>
@@ -496,6 +501,7 @@ const openWorkerDetail = async (id) => {
         <div class="row gap-8 wrap mb-12">
           <span class="badge ${st.cls}">${st.label}</span>
           <strong class="fs-16">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong>
+          ${t.batchToken && (t.batchSize || 1) > 1 ? `<span class="batch-badge">${icon('layers', 11)}同批 ${t.batchSize} 间</span>` : ''}
         </div>
         <div class="alert alert-info mb-12">
           ${icon('phone', 16)}

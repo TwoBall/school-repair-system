@@ -18,6 +18,32 @@ const seenTicketIds = new Set();
 let poolPoller = null;
 let labelTimer = null;
 let lastPoolRefresh = 0;
+
+/** 批次徽标：多房间同批提交的工单共用 batchToken，标出「同批 N 间」便于整批派工 */
+function batchBadgeHtml(t) {
+  if (!t || !t.batchToken || (t.batchSize || 1) < 2) return '';
+  return `<span class="batch-badge" title="批次 ${escapeHtml(t.batchToken)}">${icon('layers', 11)}同批 ${t.batchSize} 间</span>`;
+}
+
+/** 同一批次里除自己以外的其它房间（用当前列表做本地匹配，不额外打接口） */
+function batchSiblings(t) {
+  if (!t || !t.batchToken) return [];
+  return allTickets.filter((x) => x.batchToken === t.batchToken && x.id !== t.id);
+}
+
+/** 工单档案里的「同批其它房间」一行，可点开对应工单 */
+function batchRowHtml(t) {
+  const sibs = batchSiblings(t);
+  if (!sibs.length) return '';
+  const items = sibs
+    .map((x) => {
+      const label = `${escapeHtml(x.room)}`;
+      const st = STATUS_MAP[x.status] || { label: x.status };
+      return `<button class="batch-link" type="button" data-act="admin-detail" data-id="${escapeHtml(x.id)}" title="${escapeHtml(x.id)} · ${escapeHtml(st.label)}">${label}</button>`;
+    })
+    .join('');
+  return `<div class="info-row"><span class="k">同批其它房间</span><span class="v"><span class="batch-links">${items}</span></span></div>`;
+}
 let appConfig = { buildings: [], categories: [], workers: [], sla: {} };
 let filterState = {
   status: 'all',
@@ -408,7 +434,7 @@ function renderPoolRow(t, isNew = false) {
     <tr class="${t.isTimeout ? 'is-timeout' : ''}${isNew ? ' is-new' : ''}">
       <td data-l="工单号"><span class="ticket-no">${escapeHtml(t.id)}</span></td>
       <td class="cell-primary" data-l="">
-        <div class="cell-title">${icon('mapPin', 14)}<span>${escapeHtml(t.building)} ${escapeHtml(t.room)}</span></div>
+        <div class="cell-title">${icon('mapPin', 14)}<span>${escapeHtml(t.building)} ${escapeHtml(t.room)}</span>${batchBadgeHtml(t)}</div>
         <div class="cell-sub row gap-6 wrap">
           <span class="row gap-4">${categoryIcon(t.category, 13)}${escapeHtml(t.category)}</span>
           <span>·</span>
@@ -568,6 +594,7 @@ const openAdminDetail = async (id) => {
         <div class="row gap-8 wrap mb-12">
           <span class="badge ${st.cls}">${st.label}</span>
           <strong class="fs-16">${escapeHtml(t.building)} ${escapeHtml(t.room)}</strong>
+          ${batchBadgeHtml(t)}
         </div>
         <div class="soft-block">
           <div class="info-list">
@@ -576,6 +603,7 @@ const openAdminDetail = async (id) => {
             <div class="info-row"><span class="k">负责师傅</span><span class="v">${t.assignee ? escapeHtml(t.assignee) : '<span class="subtle">未指派</span>'}</span></div>
             <div class="info-row"><span class="k">提交时间</span><span class="v">${formatTime(t.createdAt)}</span></div>
             <div class="info-row"><span class="k">故障描述</span><span class="v">${escapeHtml(t.desc)}</span></div>
+            ${batchRowHtml(t)}
           </div>
           ${photosHtml}
         </div>
@@ -672,7 +700,7 @@ function handleExportCsv() {
     toast('当前列表无工单可导出');
     return;
   }
-  const headers = ['工单编号', '报修时间', '楼栋', '房间', '类别', '紧急度', '报修人', '电话', '身份', '状态', '师傅', '描述', '结果', '耗材/配件', '配件购方', '超时情况', '评分', '评价内容'];
+  const headers = ['工单编号', '报修时间', '楼栋', '房间', '类别', '紧急度', '报修人', '电话', '身份', '状态', '师傅', '描述', '结果', '耗材/配件', '配件购方', '超时情况', '评分', '评价内容', '批次号'];
   const rows = allTickets.map((t) => [
     t.id,
     formatTime(t.createdAt),
@@ -692,6 +720,7 @@ function handleExportCsv() {
     t.isTimeout ? t.timeoutReason : '正常',
     t.rating?.score || '',
     (t.rating?.comment || '').replace(/[\r\n]+/g, ' '),
+    t.batchToken || '',
   ]);
   exportToCsv(`总务报修导出_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
 }
