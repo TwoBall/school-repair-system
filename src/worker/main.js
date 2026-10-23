@@ -411,7 +411,7 @@ const openFinishModal = (id) => {
         </div>
         <div class="field">
           <label class="label" for="finishMaterialSourceInput">配件购方 / 耗材来源<span class="opt">选填</span></label>
-          <input class="control" type="text" id="finishMaterialSourceInput" placeholder="例如：物业部备用 / 学校采购 / 供应商保修" autocomplete="off">
+          <textarea class="control" id="finishMaterialSourceInput" rows="2" placeholder="例如：物业部备用 / 学校采购 / 供应商保修"></textarea>
         </div>
       </div>
       <div class="field">
