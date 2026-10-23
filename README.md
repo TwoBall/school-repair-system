@@ -15,7 +15,13 @@
 | **维修师傅工作台** | `https://bx.600918.xyz/worker` | 接单到场、完工提交（含耗材登记）、上传完工照、改密码 |
 | **总务处调度中心** | `https://bx.600918.xyz/admin` | 派工、驳回、打印派工单、维护字典、生成报修码、导出报表、数据看板 |
 
-三个入口物理隔离，互不干扰。二维码做法见下一节。
+三个入口物理隔离，互不干扰。三端二维码原图存于 `assets/qr/`（可打印张贴）：
+
+| 师生报修 | 维修师傅 | 总务处 |
+| :---: | :---: | :---: |
+| <img src="assets/qr/qr-reporter.png" width="140" alt="师生报修二维码" /> | <img src="assets/qr/qr-worker.png" width="140" alt="维修师傅二维码" /> | <img src="assets/qr/qr-admin.png" width="140" alt="总务处二维码" /> |
+
+二维码做法见下一节。
 
 ---
 
@@ -130,6 +136,7 @@ src/common/api.js                       统一 API 客户端（超时 / 错误�
 src/common/qrcode.js                    离线二维码渲染
 src/common/templates.js                 20 条常见故障模板 + QUICK_TEMPLATE_COUNT
 src/reporter/ src/worker/ src/admin/    三端业务逻辑
+assets/qr/                              三端入口二维码原图（手册引用）
 ```
 
 **文档**
