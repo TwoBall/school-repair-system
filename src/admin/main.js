@@ -1178,8 +1178,8 @@ async function loadSettingsForm() {
           <input class="control" type="text" id="s_webhook_url" placeholder="https://qyapi.weixin.qq.com/..." value="${escapeHtml(s.webhook_url || '')}">
         </div>
         <div class="field">
-          <label class="label" for="s_webhook_secret">加签安全密钥<span class="opt">钉钉可选</span></label>
-          <input class="control" type="text" id="s_webhook_secret" placeholder="SEC..." value="${escapeHtml(s.webhook_secret || '')}">
+          <label class="label" for="s_webhook_secret">加签安全密钥<span class="opt">钉钉可选，留空则不修改</span></label>
+          <input class="control" type="text" id="s_webhook_secret" placeholder="不填则保持原密钥" value="${s.webhook_secret ? '********' : ''}">
         </div>
         <button class="btn btn-sm btn-outline" id="btnTestWebhook" type="button">${icon('send', 14)}发送测试卡片到群</button>
       </section>
@@ -1196,10 +1196,16 @@ async function loadSettingsForm() {
       </section>
     `;
 
+    // 密钥不回显给前端，占位符 ******** 表示"沿用原值"
+    const readSecret = () => {
+      const v = document.getElementById('s_webhook_secret').value.trim();
+      return v === '********' ? '' : v;
+    };
+
     document.getElementById('btnTestWebhook').onclick = async () => {
       const webhook_type = document.getElementById('s_webhook_type').value;
       const webhook_url = document.getElementById('s_webhook_url').value.trim();
-      const webhook_secret = document.getElementById('s_webhook_secret').value.trim();
+      const webhook_secret = readSecret();
       if (!webhook_url) { toast('请先输入 Webhook 推送地址'); return; }
       const btn = document.getElementById('btnTestWebhook');
       await runAction(btn, '推送中…', async () => {
@@ -1220,8 +1226,9 @@ async function loadSettingsForm() {
         sla_finish_hours: document.getElementById('s_sla_finish').value.trim(),
         webhook_type: document.getElementById('s_webhook_type').value,
         webhook_url: document.getElementById('s_webhook_url').value.trim(),
-        webhook_secret: document.getElementById('s_webhook_secret').value.trim(),
       };
+      const secret = readSecret();
+      if (secret) payload.webhook_secret = secret;
       const pwd = document.getElementById('s_admin_pwd').value.trim();
       if (pwd) payload.admin_password = pwd;
 

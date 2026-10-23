@@ -236,6 +236,28 @@ function formatTicket(t, settings = {}) {
   };
 }
 
+// ------------------- 角色鉴权与脱敏 -------------------
+// 前端 token 解密后带 role，用来区分"自己看自己"和"管理员看全部"
+async function getAuthRole(request) {
+  const authHeader = request.headers.get('Authorization') || '';
+  if (!authHeader.startsWith('Bearer ')) return null;
+  const payload = await verifyToken(authHeader.slice(7).trim());
+  return payload && payload.role ? payload.role : null;
+}
+
+// 未鉴权的公开请求里把手机号打码（138****0001），避免任何人拉一遍列表就能拿到全校联系方式
+function maskPhone(v) {
+  const s = String(v || '');
+  return s.length >= 7 ? s.slice(0, 3) + '****' + s.slice(-4) : s;
+}
+
+// 报修人自己的记录可以看全号：前端查询时带了 ?phone= 就算本人查询
+async function publicView(request, env, tickets, selfQuery) {
+  const role = await getAuthRole(request);
+  if (role === 'admin' || selfQuery) return tickets;
+  return tickets.map((t) => ({ ...t, phone: maskPhone(t.phone) }));
+}
+
 // ------------------- Webhook 消息通知 -------------------
 async function sendWebhook(settings, eventType, data) {
   const type = settings.webhook_type;
@@ -389,6 +411,26 @@ export async function onRequest(context) {
       return fail('未知角色');
     }
 
+    // 师傅自助修改登录密码（师傅端「修改密码」弹窗依赖此路由）
+    if (path === '/api/auth/change-password' && method === 'POST') {
+      const authHeader = request.headers.get('Authorization') || '';
+      const payload = authHeader.startsWith('Bearer ') ? await verifyToken(authHeader.slice(7).trim()) : null;
+      if (!payload || payload.role !== 'worker') return fail('请先登录师傅端', 401);
+
+      const body = await request.json().catch(() => ({}));
+      const oldPassword = String(body.oldPassword || '');
+      const newPassword = String(body.newPassword || '');
+      if (newPassword.length < 6) return fail('新密码长度不能少于 6 位');
+
+      const worker = await db.prepare('SELECT * FROM workers WHERE id = ?').bind(payload.workerId).first();
+      if (!worker) return fail('账号不存在，请联系总务处');
+      if (worker.password !== oldPassword) return fail('原密码不正确');
+      if (worker.password === newPassword) return fail('新密码不能与原密码相同');
+
+      await db.prepare('UPDATE workers SET password = ? WHERE id = ?').bind(newPassword, worker.id).run();
+      return ok(true, '密码修改成功');
+    }
+
     // 3. 图片文件上传 (支持 Cloudflare R2，未配置 R2 时自动转换为 base64 存入)
     if (path === '/api/upload' && method === 'POST') {
       const formData = await request.formData();
@@ -462,7 +504,7 @@ export async function onRequest(context) {
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));
 
-      return ok(rows.map((r) => formatTicket(r, sMap)));
+      return ok(await publicView(request, env, rows.map((r) => formatTicket(r, sMap)), Boolean(phone)));
     }
 
     if (path.startsWith('/api/tickets/') && method === 'GET' && !path.includes('/comments')) {
@@ -477,7 +519,7 @@ export async function onRequest(context) {
       const formatted = formatTicket(t, sMap);
       const comments = (await db.prepare('SELECT * FROM ticket_comments WHERE ticketId = ? ORDER BY createdAt ASC').bind(id).all()).results || [];
       formatted.comments = comments;
-      return ok(formatted);
+      return ok((await publicView(request, env, [formatted], false))[0]);
     }
 
     if (path === '/api/tickets' && method === 'POST') {
@@ -702,6 +744,12 @@ export async function onRequest(context) {
     }
 
     // 5. 后台管理接口 (师傅/楼栋/分类/设置)
+    // 这一整段都必须管理员身份：以前 checkAdmin 定义了却从未调用，
+    // 导致任何人裸调 /api/admin/settings 就能读到管理员口令、并直接改写系统配置。
+    if (path.startsWith('/api/admin/') && !(await checkAdmin(request, env))) {
+      return fail('请先登录管理端', 401);
+    }
+
     if (path === '/api/admin/workers') {
       if (method === 'GET') {
         const rows = (await db.prepare('SELECT * FROM workers ORDER BY createdAt ASC').all()).results || [];
@@ -768,15 +816,21 @@ export async function onRequest(context) {
         const rows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
         const sMap = {};
         rows.forEach((r) => (sMap[r.key] = r.value));
+        // 口令不下发：前端只需要知道"是否已设置"，回显明文等于把后台钥匙摆在接口里
+        delete sMap.admin_password;
+        delete sMap.worker_common_key;
+        delete sMap.webhook_secret;
         return ok(sMap);
       }
       if (method === 'POST') {
         const body = await request.json();
         const stmts = [];
         for (const [k, v] of Object.entries(body)) {
+          // 口令留空 = 不修改，避免前端不回显导致误清空
+          if ((k === 'admin_password' || k === 'worker_common_key' || k === 'webhook_secret') && !String(v || '').trim()) continue;
           stmts.push(db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind(k, String(v)));
         }
-        await db.batch(stmts);
+        if (stmts.length) await db.batch(stmts);
         return ok(true, '设置保存成功');
       }
     }
@@ -789,6 +843,7 @@ export async function onRequest(context) {
 
     // 统计大屏
     if (path === '/api/stats/dashboard') {
+      if (!(await checkAdmin(request, env))) return fail('请先登录管理端', 401);
       const tickets = (await db.prepare('SELECT * FROM tickets').all()).results || [];
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
