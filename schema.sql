@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS tickets (
   completedAt INTEGER,
   closedAt INTEGER,
   result TEXT,
+  material TEXT,
+  materialSource TEXT,
   finishPhotos TEXT,
   lastRemindAt INTEGER DEFAULT 0,
   remindCount INTEGER DEFAULT 0

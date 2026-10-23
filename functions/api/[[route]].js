@@ -33,18 +33,12 @@ CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, day TEXT, createdAt INT
 CREATE TABLE IF NOT EXISTS ticket_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, ticketId TEXT NOT NULL, senderRole TEXT NOT NULL, senderName TEXT NOT NULL, content TEXT NOT NULL, createdAt INTEGER NOT NULL);
 `;
 
-// 真实楼栋字典（编号 + 用途）。A=教学楼 / B=实训楼 / C=宿舍 / D=行政区
+// 楼栋字典（编号 + 用途）。A=教学楼 / B=实训楼 / C=宿舍
 const DEFAULT_BUILDINGS = [
   'A1 教学楼', 'A2 教学楼', 'A3 教学楼', 'A4 教学楼',
   'B1 实训楼', 'B2 实训楼',
   'C1 学生宿舍', 'C2 学生宿舍', 'C3 学生宿舍', 'C4 学生宿舍',
-  'C5 学生宿舍', 'C6 学生宿舍', 'C7 教师宿舍', 'C8 学生宿舍',
-  'D区 行政办公楼', '室外公共区域',
-];
-// 迁移前的内置旧字典：仅当字典仍是这一套时才允许被真实字典替换
-const LEGACY_BUILDINGS = [
-  '教学楼A栋', '教学楼B栋', '教学楼C栋', '实验楼', '图书馆', '行政楼',
-  '食堂', '体育馆', '学生公寓1栋', '学生公寓2栋', '学生公寓3栋', '学生公寓4栋', '教师公寓',
+  'C5 学生宿舍', 'C6 学生宿舍', 'C7 教师宿舍',
 ];
 
 let schemaChecked = false;
@@ -52,48 +46,15 @@ async function ensureSchema(db) {
   if (schemaChecked) return;
   try {
     await db.exec(INIT_SQL);
-    await migrateTicketColumns(db);
     // 检查是否有数据，若没有则插入默认种子数据
     const countRes = await db.prepare('SELECT count(*) as c FROM workers').first();
     if (!countRes || countRes.c === 0) {
       await seedDefaults(db);
     }
-    await migrateBuildingDict(db);
     schemaChecked = true;
   } catch (e) {
     console.error('ensureSchema error:', e);
   }
-}
-
-// 老库补列：CREATE TABLE IF NOT EXISTS 不会给已存在的表加字段
-async function migrateTicketColumns(db) {
-  for (const col of ['material', 'materialSource']) {
-    try {
-      await db.prepare(`ALTER TABLE tickets ADD COLUMN ${col} TEXT`).run();
-    } catch (e) {
-      // 列已存在时忽略
-    }
-  }
-}
-
-// 楼栋字典迁移到真实编号；用户已自行改过字典时不覆盖
-async function migrateBuildingDict(db) {
-  const ver = await db.prepare("SELECT value FROM settings WHERE key = 'dict_buildings_v'").first();
-  if (ver && ver.value === '2') return;
-
-  const cur = (await db.prepare('SELECT name FROM buildings').all()).results || [];
-  const names = cur.map((r) => r.name);
-  const untouched = names.length === 0 || names.every((n) => LEGACY_BUILDINGS.includes(n));
-
-  if (untouched) {
-    await db.prepare('DELETE FROM buildings').run();
-    const stmts = DEFAULT_BUILDINGS.map((b, i) =>
-      db.prepare('INSERT INTO buildings (name, sortOrder, active) VALUES (?, ?, 1)').bind(b, i + 1)
-    );
-    await db.batch(stmts);
-  }
-
-  await db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dict_buildings_v', '2')").run();
 }
 
 async function seedDefaults(db) {
@@ -121,7 +82,7 @@ async function seedDefaults(db) {
     stmts.push(db.prepare('INSERT INTO workers (id, username, password, name, skill, phone, active, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(...w));
   }
 
-  // 默认楼栋（真实编号）
+  // 楼栋
   DEFAULT_BUILDINGS.forEach((b, i) => {
     stmts.push(db.prepare('INSERT INTO buildings (name, sortOrder, active) VALUES (?, ?, 1)').bind(b, i + 1));
   });
