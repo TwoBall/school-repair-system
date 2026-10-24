@@ -236,6 +236,50 @@ function formatTicket(t, settings = {}) {
   };
 }
 
+/**
+ * 照片白名单校验：只接受本站上传路径或图片 data URL。
+ * 返回 null 表示不合法；R2 未绑定时前端会传 base64，故一并放行但限总量。
+ */
+function sanitizePhotos(input) {
+  if (input === undefined || input === null) return [];
+  if (!Array.isArray(input)) return null;
+  if (input.length > 3) return null;
+  const out = [];
+  let total = 0;
+  for (const p of input) {
+    if (typeof p !== 'string') return null;
+    total += p.length;
+    // 单条上限 200KB、整单上限 500KB，防止 base64 撑爆 D1 单行（硬限 1MB）
+    if (p.length > 200000 || total > 500000) return null;
+    const ok = p.startsWith('/api/uploads/') || /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(p);
+    if (!ok) return null;
+    out.push(p);
+  }
+  return out;
+}
+
+/**
+ * 字典项上移/下移：把整表按 sortOrder 重新编号，避免相邻两项 sortOrder 相同时挪不动。
+ * table 只接受调用方传入的固定字面量（buildings / categories）。
+ */
+async function moveDictItem(db, table, id, dir) {
+  const rows = (await db.prepare(`SELECT id, sortOrder FROM ${table} ORDER BY sortOrder ASC, id ASC`).all()).results || [];
+  const idx = rows.findIndex((r) => String(r.id) === String(id));
+  if (idx < 0) return false;
+  const target = dir === 'up' ? idx - 1 : idx + 1;
+  if (target < 0 || target >= rows.length) return false; // 已在边界，直接忽略
+
+  const arr = rows.slice();
+  const tmp = arr[idx];
+  arr[idx] = arr[target];
+  arr[target] = tmp;
+
+  // 重新编号为 10、20、30…，顺便把历史遗留的重复值理顺
+  const stmts = arr.map((r, i) => db.prepare(`UPDATE ${table} SET sortOrder = ? WHERE id = ?`).bind((i + 1) * 10, r.id));
+  await db.batch(stmts);
+  return true;
+}
+
 // ------------------- 角色鉴权与脱敏 -------------------
 // 前端 token 解密后带 role，用来区分"自己看自己"和"管理员看全部"
 async function getAuthRole(request) {
@@ -537,6 +581,10 @@ export async function onRequest(context) {
       const clientToken = typeof body.clientToken === 'string' ? body.clientToken.trim().slice(0, 64) : '';
       const batchToken = typeof body.batchToken === 'string' ? body.batchToken.trim().slice(0, 64) : '';
       const batchSize = Math.max(1, Math.min(50, parseInt(body.batchSize, 10) || 1));
+      // 照片由前端限制 3 张并压缩，但接口可被直调：这里再兜一道，
+      // 避免塞进超长数组或任意 URL；R2 未绑定时图片会退化为 base64，更要控住总量
+      const safePhotos = sanitizePhotos(photos);
+      if (safePhotos === null) return fail('现场照片最多 3 张，且必须来自系统上传');
       const settingsRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
       settingsRows.forEach((r) => (sMap[r.key] = r.value));
@@ -566,7 +614,7 @@ export async function onRequest(context) {
         db.prepare(`
           INSERT INTO tickets (id, day, createdAt, building, room, category, urgency, desc, reporter, phone, identity, photos, status, assignee, timeline, rating, completedAt, closedAt, result, finishPhotos, lastRemindAt, remindCount, batchToken, batchSize)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, NULL, NULL, '', '[]', 0, 0, ?, ?)
-        `).bind(id, day, now, building || '教学楼A栋', room, category || '水电照明', urgency || '普通', desc, reporter, phone, identity || '学生', JSON.stringify(photos || []), JSON.stringify(timeline), batchToken || null, batchSize),
+        `).bind(id, day, now, building || '教学楼A栋', room, category || '水电照明', urgency || '普通', desc, reporter, phone, identity || '学生', JSON.stringify(safePhotos), JSON.stringify(timeline), batchToken || null, batchSize),
       ];
       // clientToken 与工单同批写入；若并发下被别的请求抢先插入，INSERT OR IGNORE 不报错，后续查回原工单
       if (clientToken) {
@@ -656,13 +704,16 @@ export async function onRequest(context) {
       const now = Date.now();
       const material = typeof body.material === 'string' ? body.material.trim() : '';
       const materialSource = typeof body.materialSource === 'string' ? body.materialSource.trim() : '';
+      // 完工照片同样是外部可控输入，走同一套校验
+      const safeFinishPhotos = sanitizePhotos(body.photos);
+      if (safeFinishPhotos === null) return fail('完工照片最多 3 张，且必须来自系统上传');
       const noteParts = [body.result];
       if (material) noteParts.push(`耗材/配件：${material}`);
       if (materialSource) noteParts.push(`配件购方：${materialSource}`);
       tl.push({ t: now, by: t.assignee || '维修师傅', action: '维修完成，等待验收', note: noteParts.filter(Boolean).join('；') });
 
       await db.prepare('UPDATE tickets SET status = ?, completedAt = ?, result = ?, material = ?, materialSource = ?, finishPhotos = ?, timeline = ? WHERE id = ?')
-        .bind('done', now, body.result, material, materialSource, JSON.stringify(body.photos || []), JSON.stringify(tl), id).run();
+        .bind('done', now, body.result, material, materialSource, JSON.stringify(safeFinishPhotos), JSON.stringify(tl), id).run();
 
       const updated = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
@@ -808,7 +859,8 @@ export async function onRequest(context) {
       }
       if (method === 'POST') {
         const body = await request.json();
-        await db.prepare('INSERT INTO buildings (name, sortOrder, active) VALUES (?, 10, 1)').bind(body.name).run();
+        const maxRow = await db.prepare('SELECT COALESCE(MAX(sortOrder), 0) AS m FROM buildings').first();
+        await db.prepare('INSERT INTO buildings (name, sortOrder, active) VALUES (?, ?, 1)').bind(body.name, (maxRow?.m || 0) + 10).run();
         return ok(true);
       }
     }
@@ -824,6 +876,13 @@ export async function onRequest(context) {
       }
       return ok(true);
     }
+    // 调整楼栋在报修表单里的排列顺序（上移 / 下移）
+    if (path.startsWith('/api/admin/buildings/') && path.endsWith('/move') && method === 'POST') {
+      const id = path.split('/')[4];
+      const body = await request.json().catch(() => ({}));
+      await moveDictItem(db, 'buildings', id, body.dir === 'up' ? 'up' : 'down');
+      return ok(true);
+    }
     if (path.startsWith('/api/admin/buildings/') && method === 'DELETE') {
       const id = path.split('/')[4];
       await db.prepare('DELETE FROM buildings WHERE id = ?').bind(id).run();
@@ -837,7 +896,8 @@ export async function onRequest(context) {
       }
       if (method === 'POST') {
         const body = await request.json();
-        await db.prepare('INSERT INTO categories (name, sortOrder, active) VALUES (?, 10, 1)').bind(body.name).run();
+        const maxRow = await db.prepare('SELECT COALESCE(MAX(sortOrder), 0) AS m FROM categories').first();
+        await db.prepare('INSERT INTO categories (name, sortOrder, active) VALUES (?, ?, 1)').bind(body.name, (maxRow?.m || 0) + 10).run();
         return ok(true);
       }
     }
@@ -851,6 +911,13 @@ export async function onRequest(context) {
       if (sets.length) {
         await db.prepare(`UPDATE categories SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
       }
+      return ok(true);
+    }
+    // 调整故障分类在报修表单里的排列顺序（上移 / 下移）
+    if (path.startsWith('/api/admin/categories/') && path.endsWith('/move') && method === 'POST') {
+      const id = path.split('/')[4];
+      const body = await request.json().catch(() => ({}));
+      await moveDictItem(db, 'categories', id, body.dir === 'up' ? 'up' : 'down');
       return ok(true);
     }
     if (path.startsWith('/api/admin/categories/') && method === 'DELETE') {

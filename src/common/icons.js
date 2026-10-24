@@ -82,7 +82,7 @@ export function icon(name, size = 18, extraClass = '') {
   return `<svg${cls} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${body}</svg>`;
 }
 
-/** 故障类别 → 图标名 */
+/** 故障类别 → 图标名（精确匹配优先） */
 export const CATEGORY_ICONS = {
   水电照明: 'zap',
   门窗家具: 'door',
@@ -94,8 +94,27 @@ export const CATEGORY_ICONS = {
   其他: 'dots',
 };
 
+/**
+ * 关键词兜底：管理员改了分类名（如「水电照明」→「水电维修」）或新增分类时，
+ * 精确匹配会失配，这里按关键词再试一次，避免图标一律退化成 «dots».
+ * 顺序即优先级，先命中的生效。
+ */
+const CATEGORY_KEYWORDS = [
+  // 「电梯」必须排在「电」前面，否则「电梯困人」会被单字「电」抢先匹配成 zap
+  ['电梯', 'elevator'],
+  ['多媒体', 'monitor'], ['投影', 'monitor'], ['电脑', 'monitor'], ['广播', 'monitor'], ['监控', 'monitor'],
+  ['空调', 'wind'], ['风扇', 'wind'], ['通风', 'wind'],
+  ['电', 'zap'], ['灯', 'zap'], ['照明', 'zap'],
+  ['水', 'droplet'], ['排水', 'droplet'], ['卫浴', 'droplet'], ['管道', 'droplet'], ['厕所', 'droplet'],
+  ['门', 'door'], ['窗', 'door'], ['家具', 'door'], ['桌椅', 'door'], ['锁', 'door'],
+  ['墙', 'layers'], ['地面', 'layers'], ['地砖', 'layers'], ['油漆', 'layers'],
+];
+
 export function categoryIcon(name, size = 15) {
-  return icon(CATEGORY_ICONS[name] || 'dots', size);
+  const n = String(name || '');
+  if (CATEGORY_ICONS[n]) return icon(CATEGORY_ICONS[n], size);
+  const hit = CATEGORY_KEYWORDS.find(([kw]) => n.includes(kw));
+  return icon(hit ? hit[1] : 'dots', size);
 }
 
 /** 星级渲染（整数星 + 空心星） */

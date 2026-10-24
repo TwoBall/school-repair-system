@@ -49,6 +49,7 @@ let filterState = {
   status: 'all',
   building: 'all',
   category: 'all',
+  urgency: 'all',
   search: '',
   timeoutOnly: false,
 };
@@ -269,6 +270,13 @@ function renderPoolView() {
         <span class="chip ${filterState.status === 'closed' ? 'active' : ''}" data-st="closed">已结单</span>
         <span class="chip danger ${filterState.timeoutOnly ? 'active' : ''}" data-st="timeout">${icon('alert', 14)}超时预警</span>
       </div>
+
+      <div class="chips-group mt-8" id="poolUrgencyChips">
+        <span class="chip ${filterState.urgency === 'all' ? 'active' : ''}" data-ug="all">紧急度：全部</span>
+        <span class="chip ${filterState.urgency === '普通' ? 'active' : ''}" data-ug="普通">普通</span>
+        <span class="chip ${filterState.urgency === '较急' ? 'active' : ''}" data-ug="较急">较急</span>
+        <span class="chip ${filterState.urgency === '紧急' ? 'active' : ''}" data-ug="紧急">${icon('alert', 14)}紧急</span>
+      </div>
     </section>
 
     <div id="poolListContainer">${skeletonRows(3)}</div>
@@ -287,6 +295,15 @@ function bindPoolEvents() {
         filterState.timeoutOnly = false;
         filterState.status = st;
       }
+      loadPoolTickets();
+    },
+  });
+
+  bindChipRadioGroup(document.getElementById('poolUrgencyChips'), {
+    valueKey: 'ug',
+    label: '紧急度筛选',
+    onChange: (ug) => {
+      filterState.urgency = ug;
       loadPoolTickets();
     },
   });
@@ -363,6 +380,7 @@ async function loadPoolTickets({ silent = false } = {}) {
   if (filterState.status !== 'all') q += `&status=${encodeURIComponent(filterState.status)}`;
   if (filterState.building !== 'all') q += `&building=${encodeURIComponent(filterState.building)}`;
   if (filterState.category !== 'all') q += `&category=${encodeURIComponent(filterState.category)}`;
+  if (filterState.urgency !== 'all') q += `&urgency=${encodeURIComponent(filterState.urgency)}`;
   if (filterState.search) q += `&search=${encodeURIComponent(filterState.search)}`;
 
   try {
@@ -763,6 +781,14 @@ async function loadDashboard() {
         </div>
         <div class="bar-list">${renderBarList(st.bldgMap)}</div>
       </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">${icon('users', 16)}维修师傅工作量</div>
+          <span class="card-sub">按派单量排序，便于均衡分工</span>
+        </div>
+        <div class="bar-list">${renderWorkerLoad(st.workerMap)}</div>
+      </section>
     `;
 
     const timeoutCard = document.getElementById('cardKpiTimeout');
@@ -792,6 +818,27 @@ function renderBarList(map) {
           <span class="bar-name">${escapeHtml(k)}</span>
           <span class="bar-track"><span class="bar-fill" style="width: ${pct}%;"></span></span>
           <span class="bar-val">${v}</span>
+        </div>`;
+    })
+    .join('');
+}
+
+/** 师傅工作量：workerMap 的值是 { total, closed, working }，比分类/楼栋多两个维度 */
+function renderWorkerLoad(map) {
+  if (!map) return '<div class="subtle fs-13">暂无数据</div>';
+  const keys = Object.keys(map).sort((a, b) => map[b].total - map[a].total);
+  if (!keys.length) return '<div class="subtle fs-13">暂无派工记录</div>';
+  const max = map[keys[0]].total || 1;
+  return keys
+    .map((k) => {
+      const v = map[k];
+      const pct = Math.round((v.total / max) * 100);
+      return `
+        <div class="bar-row bar-row-note">
+          <span class="bar-name">${escapeHtml(k)}</span>
+          <span class="bar-track"><span class="bar-fill" style="width: ${pct}%;"></span></span>
+          <span class="bar-val">${v.total}</span>
+          <span class="bar-note">在办 ${v.working || 0} · 完成 ${v.closed || 0}</span>
         </div>`;
     })
     .join('');
@@ -1025,12 +1072,14 @@ async function loadBldgsTable() {
     }
     box.innerHTML = simpleTable(
       ['楼栋名称', '状态', '操作'],
-      list.map((b) => `
+      list.map((b, i) => `
         <tr>
           <td class="cell-primary"><div class="cell-title">${icon('school', 14)}<span>${escapeHtml(b.name)}</span></div></td>
           <td data-l="状态">${b.active ? '<span class="badge b-done">启用</span>' : '<span class="badge b-rejected">停用</span>'}</td>
           <td data-l="" class="no-label">
             <div class="tbl-actions">
+              <button class="btn btn-sm btn-ghost btn-icon" type="button" data-act="bldg-move" data-id="${b.id}" data-val="up" ${i === 0 ? 'disabled' : ''} title="上移" aria-label="上移">↑</button>
+              <button class="btn btn-sm btn-ghost btn-icon" type="button" data-act="bldg-move" data-id="${b.id}" data-val="down" ${i === list.length - 1 ? 'disabled' : ''} title="下移" aria-label="下移">↓</button>
               <button class="btn btn-sm btn-outline" type="button" data-act="bldg-toggle" data-id="${b.id}" data-val="${b.active ? 1 : 0}">${icon(b.active ? 'ban' : 'check', 14)}${b.active ? '停用' : '启用'}</button>
               <button class="btn btn-sm btn-danger" type="button" data-act="bldg-del" data-id="${b.id}">${icon('trash', 14)}删除</button>
             </div>
@@ -1041,6 +1090,17 @@ async function loadBldgsTable() {
     renderLoadError(box, err, () => loadBldgsTable());
   }
 }
+
+// 楼栋/故障分类的排序调整：改完会影响报修表单下拉的排列顺序
+const moveDictItem = async (kind, id, dir) => {
+  try {
+    await request(`/api/admin/${kind}/${id}/move`, { method: 'POST', token: adminToken, body: { dir } });
+    if (kind === 'buildings') loadBldgsTable(); else loadCatsTable();
+    loadConfig();
+  } catch (err) {
+    toast(err.message);
+  }
+};
 
 // 楼栋/故障分类的停用与启用：两者逻辑一致，差别只在文案与刷新目标
 const toggleDictItem = async (kind, id, active) => {
@@ -1117,12 +1177,14 @@ async function loadCatsTable() {
     }
     box.innerHTML = simpleTable(
       ['分类名称', '状态', '操作'],
-      list.map((c) => `
+      list.map((c, i) => `
         <tr>
           <td class="cell-primary"><div class="cell-title">${categoryIcon(c.name, 14)}<span>${escapeHtml(c.name)}</span></div></td>
           <td data-l="状态">${c.active ? '<span class="badge b-done">启用</span>' : '<span class="badge b-rejected">停用</span>'}</td>
           <td data-l="" class="no-label">
             <div class="tbl-actions">
+              <button class="btn btn-sm btn-ghost btn-icon" type="button" data-act="cat-move" data-id="${c.id}" data-val="up" ${i === 0 ? 'disabled' : ''} title="上移" aria-label="上移">↑</button>
+              <button class="btn btn-sm btn-ghost btn-icon" type="button" data-act="cat-move" data-id="${c.id}" data-val="down" ${i === list.length - 1 ? 'disabled' : ''} title="下移" aria-label="下移">↓</button>
               <button class="btn btn-sm btn-outline" type="button" data-act="cat-toggle" data-id="${c.id}" data-val="${c.active ? 1 : 0}">${icon(c.active ? 'ban' : 'check', 14)}${c.active ? '停用' : '启用'}</button>
               <button class="btn btn-sm btn-danger" type="button" data-act="cat-del" data-id="${c.id}">${icon('trash', 14)}删除</button>
             </div>
@@ -1358,8 +1420,10 @@ delegateActions({
   'worker-del': ({ id }) => deleteWorker(id),
   'bldg-del': ({ id }) => deleteBldg(id),
   'bldg-toggle': ({ id, val }) => toggleDictItem('buildings', id, Number(val)),
+  'bldg-move': ({ id, val }) => moveDictItem('buildings', id, val),
   'cat-del': ({ id }) => deleteCat(id),
   'cat-toggle': ({ id, val }) => toggleDictItem('categories', id, Number(val)),
+  'cat-move': ({ id, val }) => moveDictItem('categories', id, val),
   'view-photo': ({ src }) => viewImage(src),
   'modal-close': () => closeModal(),
 });
