@@ -630,6 +630,10 @@ const openAdminDetail = async (id) => {
         ${timelineHtml}
         ${commentsHtml}
       </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" type="button" data-act="modal-close">关闭</button>
+        <button class="btn btn-danger" type="button" data-act="ticket-del" data-id="${escapeHtml(t.id)}">${icon('trash', 16)}删除工单</button>
+      </div>
     `);
 
     const input = document.getElementById('dlgCommentInput');
@@ -990,6 +994,29 @@ const toggleWorker = async (id, active) => {
     toast(disabling ? '已停用' : '已启用');
     loadWorkersTable();
     loadConfig();
+  } catch (err) {
+    toast(err.message);
+  }
+};
+
+/**
+ * 删除工单：物理删除，连带留言一起清掉。
+ * 只给管理员、且必须二次确认 —— 建议仅用于清理误报和测试数据。
+ */
+const deleteTicket = async (id) => {
+  const ok = await confirmDialog({
+    title: '删除工单',
+    desc: `将彻底删除工单 ${id} 及其全部留言记录，统计口径也会一并调整。此操作不可撤销。`,
+    okText: '确认删除',
+    danger: true,
+    iconName: 'trash',
+  });
+  if (!ok) return;
+  try {
+    await request(`/api/admin/tickets/${id}`, { method: 'DELETE', token: adminToken });
+    toast(`已删除工单 ${id}`);
+    closeModal();
+    loadPoolTickets();
   } catch (err) {
     toast(err.message);
   }
@@ -1412,6 +1439,7 @@ function logout() {
 // ----------------- 事件委托（替代 onclick="window.xxx()"） -----------------
 delegateActions({
   'admin-detail': ({ id }) => openAdminDetail(id),
+  'ticket-del': ({ id }) => deleteTicket(id),
   assign: ({ id }) => openAssignModal(id),
   reject: ({ id }) => rejectTicket(id),
   print: ({ id }) => printTicket(id),

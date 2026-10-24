@@ -1018,6 +1018,22 @@ export async function onRequest(context) {
       return fail('请先登录管理端', 401);
     }
 
+    // 删除工单（管理员）：清理误报 / 测试数据用。物理删除，不可恢复。
+    if (path.startsWith('/api/admin/tickets/') && method === 'DELETE') {
+      const id = path.split('/')[4];
+      const t = await db.prepare('SELECT id, building, room, status FROM tickets WHERE id = ?').bind(id).first();
+      if (!t) return fail('工单不存在', 404);
+
+      // 一条工单还挂着留言和提交幂等记录，只删主表会留下孤儿数据：
+      // 幂等记录不清，同一个 clientToken 再提交会返回「已提交过」却查不到工单
+      await db.batch([
+        db.prepare('DELETE FROM tickets WHERE id = ?').bind(id),
+        db.prepare('DELETE FROM ticket_comments WHERE ticketId = ?').bind(id),
+        db.prepare('DELETE FROM ticket_dedup WHERE ticketId = ?').bind(id),
+      ]);
+      return ok({ id: t.id, building: t.building, room: t.room }, `已删除工单 ${t.id}`);
+    }
+
     if (path === '/api/admin/workers') {
       if (method === 'GET') {
         const rows = (await db.prepare('SELECT * FROM workers ORDER BY createdAt ASC').all()).results || [];
