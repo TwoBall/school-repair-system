@@ -766,8 +766,12 @@ export async function onRequest(context) {
     if (path.startsWith('/api/admin/workers/') && method === 'PUT') {
       const id = path.split('/')[4];
       const body = await request.json();
-      if (body.password) {
-        await db.prepare('UPDATE workers SET password = ? WHERE id = ?').bind(body.password, id).run();
+      const sets = [], params = [];
+      if (body.password) { sets.push('password = ?'); params.push(String(body.password)); }
+      // 停用/启用：停用后师傅不能登录，且不再出现在派工名单，历史工单保留
+      if (body.active === 0 || body.active === 1) { sets.push('active = ?'); params.push(body.active); }
+      if (sets.length) {
+        await db.prepare(`UPDATE workers SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
       }
       return ok(true);
     }

@@ -895,6 +895,7 @@ async function loadWorkersTable() {
           <td data-l="" class="no-label">
             <div class="tbl-actions">
               <button class="btn btn-sm btn-outline" type="button" data-act="worker-pwd" data-id="${escapeHtml(w.id)}">${icon('lock', 14)}重置密码</button>
+              <button class="btn btn-sm btn-outline" type="button" data-act="worker-toggle" data-id="${escapeHtml(w.id)}" data-val="${w.active ? 1 : 0}">${icon(w.active ? 'ban' : 'check', 14)}${w.active ? '停用' : '启用'}</button>
               <button class="btn btn-sm btn-danger" type="button" data-act="worker-del" data-id="${escapeHtml(w.id)}">${icon('trash', 14)}删除</button>
             </div>
           </td>
@@ -920,6 +921,28 @@ const editWorkerPwd = async (id) => {
     await request(`/api/admin/workers/${id}`, { method: 'PUT', token: adminToken, body: { password: newPwd } });
     toast('密码已重置');
     loadWorkersTable();
+  } catch (err) {
+    toast(err.message);
+  }
+};
+
+const toggleWorker = async (id, active) => {
+  const disabling = active === 1;
+  const ok = await confirmDialog({
+    title: disabling ? '停用维修师傅账号' : '恢复启用维修师傅账号',
+    desc: disabling
+      ? '停用后该师傅无法登录，派工名单中不再显示；其历史工单与完工记录保留，随时可再启用。'
+      : '启用后该师傅重新出现在派工名单，并可再次登录。',
+    okText: disabling ? '确认停用' : '确认启用',
+    danger: disabling,
+    iconName: disabling ? 'ban' : 'check',
+  });
+  if (!ok) return;
+  try {
+    await request(`/api/admin/workers/${id}`, { method: 'PUT', token: adminToken, body: { active: disabling ? 0 : 1 } });
+    toast(disabling ? '已停用' : '已启用');
+    loadWorkersTable();
+    loadConfig();
   } catch (err) {
     toast(err.message);
   }
@@ -1304,6 +1327,7 @@ delegateActions({
   reject: ({ id }) => rejectTicket(id),
   print: ({ id }) => printTicket(id),
   'worker-pwd': ({ id }) => editWorkerPwd(id),
+  'worker-toggle': ({ id, val }) => toggleWorker(id, Number(val)),
   'worker-del': ({ id }) => deleteWorker(id),
   'bldg-del': ({ id }) => deleteBldg(id),
   'cat-del': ({ id }) => deleteCat(id),
