@@ -1028,9 +1028,10 @@ async function loadBldgsTable() {
       list.map((b) => `
         <tr>
           <td class="cell-primary"><div class="cell-title">${icon('school', 14)}<span>${escapeHtml(b.name)}</span></div></td>
-          <td data-l="状态"><span class="badge b-done">启用</span></td>
+          <td data-l="状态">${b.active ? '<span class="badge b-done">启用</span>' : '<span class="badge b-rejected">停用</span>'}</td>
           <td data-l="" class="no-label">
             <div class="tbl-actions">
+              <button class="btn btn-sm btn-outline" type="button" data-act="bldg-toggle" data-id="${b.id}" data-val="${b.active ? 1 : 0}">${icon(b.active ? 'ban' : 'check', 14)}${b.active ? '停用' : '启用'}</button>
               <button class="btn btn-sm btn-danger" type="button" data-act="bldg-del" data-id="${b.id}">${icon('trash', 14)}删除</button>
             </div>
           </td>
@@ -1040,6 +1041,31 @@ async function loadBldgsTable() {
     renderLoadError(box, err, () => loadBldgsTable());
   }
 }
+
+// 楼栋/故障分类的停用与启用：两者逻辑一致，差别只在文案与刷新目标
+const toggleDictItem = async (kind, id, active) => {
+  const isBldg = kind === 'buildings';
+  const label = isBldg ? '楼栋' : '故障分类';
+  const disabling = active === 1;
+  const ok = await confirmDialog({
+    title: `${disabling ? '停用' : '启用'}${label}`,
+    desc: disabling
+      ? `停用后报修表单的选项中不再出现该${label}，历史工单不受影响，可随时恢复。`
+      : `启用后该${label}重新出现在报修表单的选项中。`,
+    okText: disabling ? '确认停用' : '确认启用',
+    danger: disabling,
+    iconName: disabling ? 'ban' : 'check',
+  });
+  if (!ok) return;
+  try {
+    await request(`/api/admin/${kind}/${id}`, { method: 'PUT', token: adminToken, body: { active: disabling ? 0 : 1 } });
+    toast(disabling ? '已停用' : '已启用');
+    if (isBldg) loadBldgsTable(); else loadCatsTable();
+    loadConfig();
+  } catch (err) {
+    toast(err.message);
+  }
+};
 
 const deleteBldg = async (id) => {
   const ok = await confirmDialog({
@@ -1094,9 +1120,10 @@ async function loadCatsTable() {
       list.map((c) => `
         <tr>
           <td class="cell-primary"><div class="cell-title">${categoryIcon(c.name, 14)}<span>${escapeHtml(c.name)}</span></div></td>
-          <td data-l="状态"><span class="badge b-done">启用</span></td>
+          <td data-l="状态">${c.active ? '<span class="badge b-done">启用</span>' : '<span class="badge b-rejected">停用</span>'}</td>
           <td data-l="" class="no-label">
             <div class="tbl-actions">
+              <button class="btn btn-sm btn-outline" type="button" data-act="cat-toggle" data-id="${c.id}" data-val="${c.active ? 1 : 0}">${icon(c.active ? 'ban' : 'check', 14)}${c.active ? '停用' : '启用'}</button>
               <button class="btn btn-sm btn-danger" type="button" data-act="cat-del" data-id="${c.id}">${icon('trash', 14)}删除</button>
             </div>
           </td>
@@ -1330,7 +1357,9 @@ delegateActions({
   'worker-toggle': ({ id, val }) => toggleWorker(id, Number(val)),
   'worker-del': ({ id }) => deleteWorker(id),
   'bldg-del': ({ id }) => deleteBldg(id),
+  'bldg-toggle': ({ id, val }) => toggleDictItem('buildings', id, Number(val)),
   'cat-del': ({ id }) => deleteCat(id),
+  'cat-toggle': ({ id, val }) => toggleDictItem('categories', id, Number(val)),
   'view-photo': ({ src }) => viewImage(src),
   'modal-close': () => closeModal(),
 });

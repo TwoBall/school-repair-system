@@ -792,6 +792,18 @@ export async function onRequest(context) {
         return ok(true);
       }
     }
+    if (path.startsWith('/api/admin/buildings/') && method === 'PUT') {
+      const id = path.split('/')[4];
+      const body = await request.json();
+      const sets = [], params = [];
+      // 停用后报修表单不再显示该楼栋；历史工单存的是名称快照，不受影响
+      if (body.active === 0 || body.active === 1) { sets.push('active = ?'); params.push(body.active); }
+      if (typeof body.name === 'string' && body.name.trim()) { sets.push('name = ?'); params.push(body.name.trim().slice(0, 20)); }
+      if (sets.length) {
+        await db.prepare(`UPDATE buildings SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
+      }
+      return ok(true);
+    }
     if (path.startsWith('/api/admin/buildings/') && method === 'DELETE') {
       const id = path.split('/')[4];
       await db.prepare('DELETE FROM buildings WHERE id = ?').bind(id).run();
@@ -808,6 +820,18 @@ export async function onRequest(context) {
         await db.prepare('INSERT INTO categories (name, sortOrder, active) VALUES (?, 10, 1)').bind(body.name).run();
         return ok(true);
       }
+    }
+    if (path.startsWith('/api/admin/categories/') && method === 'PUT') {
+      const id = path.split('/')[4];
+      const body = await request.json();
+      const sets = [], params = [];
+      // 停用后新建报修不再显示该分类；已有工单的分类名称保留
+      if (body.active === 0 || body.active === 1) { sets.push('active = ?'); params.push(body.active); }
+      if (typeof body.name === 'string' && body.name.trim()) { sets.push('name = ?'); params.push(body.name.trim().slice(0, 20)); }
+      if (sets.length) {
+        await db.prepare(`UPDATE categories SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
+      }
+      return ok(true);
     }
     if (path.startsWith('/api/admin/categories/') && method === 'DELETE') {
       const id = path.split('/')[4];
