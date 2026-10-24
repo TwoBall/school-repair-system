@@ -286,6 +286,12 @@ async function sendWebhook(settings, eventType, data) {
     } else if (eventType === 'ticket_rate') {
       title = `⭐ 报修已评价结单`;
       text = `### ⭐ 报修工单已验收结单\n\n- **工单编号**：${data.id}\n- **评价得分**：${'⭐'.repeat(data.score || 5)} (${data.score}分)\n- **评价反馈**：${data.comment || '满意'}`;
+    } else if (eventType === 'ticket_accept') {
+      title = `🛠 师傅已接单【${data.assignee}】`;
+      text = `### 🛠 师傅已接单并到场\n\n- **工单编号**：${data.id}\n- **报修地点**：${data.building} ${data.room}\n- **故障类型**：${data.category}\n- **维修人员**：${data.assignee}\n- **接单时间**：${timeStr}\n\n> 维修已启动，完工后系统将通知报修人验收。`;
+    } else if (eventType === 'ticket_reject') {
+      title = `🚫 工单已驳回【${data.id}】`;
+      text = `### 🚫 工单被总务处驳回\n\n- **工单编号**：${data.id}\n- **报修地点**：${data.building} ${data.room}\n- **故障类型**：${data.category}\n- **报修人**：${data.reporter}\n- **驳回原因**：${data.note || '不在维修范围或重复报修'}\n- **处理时间**：${timeStr}`;
     } else if (eventType === 'test') {
       title = `🎉 Cloudflare Pages Webhook 连通测试`;
       text = `### 🎉 Cloudflare Pages + D1 报修系统 Webhook 测试成功！\n\n- **通道**：${type}\n- **时间**：${timeStr}\n\n> 边缘计算节点已成功触发消息推送！`;
@@ -582,6 +588,14 @@ export async function onRequest(context) {
       // 发送通知
       sendWebhook(sMap, 'ticket_create', formatTicket(created, sMap)).catch(() => {});
 
+      // 幂等表只用来挡短时间内的重试，7 天前的记录已无意义，顺手清掉避免无限膨胀
+      // 清理失败不能影响建单结果，所以单独兜住
+      try {
+        await db.prepare('DELETE FROM ticket_dedup WHERE createdAt < ?').bind(now - 7 * 86400000).run();
+      } catch (e) {
+        console.error('ticket_dedup cleanup failed:', e);
+      }
+
       return ok(formatTicket(created, sMap));
     }
 
@@ -621,7 +635,13 @@ export async function onRequest(context) {
       await db.prepare('UPDATE tickets SET status = ?, timeline = ? WHERE id = ?')
         .bind('working', JSON.stringify(tl), id).run();
 
-      return ok(true);
+      const updated = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
+      const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
+      const sMap = {};
+      sRows.forEach((r) => (sMap[r.key] = r.value));
+      // 接单此前是唯一没有群通知的节点，报修人和群里都看不到"师傅已出发"
+      sendWebhook(sMap, 'ticket_accept', formatTicket(updated, sMap)).catch(() => {});
+      return ok(formatTicket(updated, sMap));
     }
 
     // 完工
