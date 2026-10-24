@@ -45,6 +45,13 @@ const DEFAULT_BUILDINGS = [
   'C5 学生宿舍', 'C6 学生宿舍', 'C7 教师宿舍',
 ];
 
+const DEFAULT_CATEGORIES = ['水电照明', '门窗家具', '空调风扇', '给排水/卫浴', '多媒体设备', '墙面地面', '电梯设施', '其他'];
+
+// 紧急度只有三档。催办阈值（urgency === '紧急'）、Webhook 标题、管理端筛选、列表高亮
+// 全部依赖这三个字面量，接口可被直调，必须在写入侧兜住，否则会落进库里变成筛不出的脏值。
+const URGENCY_LEVELS = ['普通', '较急', '紧急'];
+const IDENTITIES = ['教职工', '职工', '学生', '访客'];
+
 let schemaChecked = false;
 async function ensureSchema(db) {
   if (schemaChecked) return;
@@ -55,10 +62,31 @@ async function ensureSchema(db) {
     if (!countRes || countRes.c === 0) {
       await seedDefaults(db);
     }
+    await normalizeLegacyUrgency(db);
     schemaChecked = true;
   } catch (e) {
     console.error('ensureSchema error:', e);
   }
+}
+
+let urgencyNormalized = false;
+/**
+ * 历史脏值订正（幂等）：早期接口没校验紧急度，落进过 normal 之类不在三档内的值，
+ * 结果管理端按「普通」筛选时这几条筛不出来。这里兜一次让老数据自愈，
+ * 免得为了几条测试数据去线上手工 UPDATE。
+ */
+async function normalizeLegacyUrgency(db) {
+  if (urgencyNormalized) return;
+  try {
+    const r = await db.prepare(
+      "UPDATE tickets SET urgency = '普通' WHERE urgency IS NULL OR urgency NOT IN ('普通', '较急', '紧急')"
+    ).run();
+    const n = (r && ((r.meta && r.meta.changes) || r.changes)) || 0;
+    if (n) console.log('normalizeLegacyUrgency: 订正历史紧急度', n, '条');
+  } catch (e) {
+    console.error('normalizeLegacyUrgency error:', e);
+  }
+  urgencyNormalized = true; // 失败也别每个请求都重试
 }
 
 async function seedDefaults(db) {
@@ -92,8 +120,7 @@ async function seedDefaults(db) {
   });
 
   // 默认分类
-  const categories = ['水电照明', '门窗家具', '空调风扇', '给排水/卫浴', '多媒体设备', '墙面地面', '电梯设施', '其他'];
-  categories.forEach((c, i) => {
+  DEFAULT_CATEGORIES.forEach((c, i) => {
     stmts.push(db.prepare('INSERT INTO categories (name, sortOrder, active) VALUES (?, ?, 1)').bind(c, i + 1));
   });
 
@@ -585,6 +612,20 @@ export async function onRequest(context) {
       // 避免塞进超长数组或任意 URL；R2 未绑定时图片会退化为 base64，更要控住总量
       const safePhotos = sanitizePhotos(photos);
       if (safePhotos === null) return fail('现场照片最多 3 张，且必须来自系统上传');
+
+      // 枚举字段：前端是固定 chip / 下拉，但接口可被直调，非法值一律回落到默认档，
+      // 否则会污染催办阈值（=== '紧急'）、Webhook 标题与管理端紧急度筛选
+      const safeUrgency = URGENCY_LEVELS.includes(urgency) ? urgency : '普通';
+      const safeIdentity = IDENTITIES.includes(identity) ? identity : '教职工';
+      // 楼栋/分类必须来自启用中的字典，避免停用后仍能被直调写入；
+      // 字典为空（首次初始化异常）时不校验，免得把正常报修全挡掉
+      const bldgNames = ((await db.prepare('SELECT name FROM buildings WHERE active = 1').all()).results || []).map((r) => r.name);
+      const catNames = ((await db.prepare('SELECT name FROM categories WHERE active = 1').all()).results || []).map((r) => r.name);
+      const safeBuilding = bldgNames.length ? (bldgNames.includes(building) ? building : '') : (building || DEFAULT_BUILDINGS[0]);
+      const safeCategory = catNames.length ? (catNames.includes(category) ? category : '') : (category || DEFAULT_CATEGORIES[0]);
+      if (!safeBuilding) return fail('楼栋无效或已停用，请刷新页面重新选择');
+      if (!safeCategory) return fail('故障分类无效或已停用，请刷新页面重新选择');
+
       const settingsRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
       settingsRows.forEach((r) => (sMap[r.key] = r.value));
@@ -614,7 +655,7 @@ export async function onRequest(context) {
         db.prepare(`
           INSERT INTO tickets (id, day, createdAt, building, room, category, urgency, desc, reporter, phone, identity, photos, status, assignee, timeline, rating, completedAt, closedAt, result, finishPhotos, lastRemindAt, remindCount, batchToken, batchSize)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, NULL, NULL, '', '[]', 0, 0, ?, ?)
-        `).bind(id, day, now, building || '教学楼A栋', room, category || '水电照明', urgency || '普通', desc, reporter, phone, identity || '学生', JSON.stringify(safePhotos), JSON.stringify(timeline), batchToken || null, batchSize),
+        `).bind(id, day, now, safeBuilding, room, safeCategory, safeUrgency, desc, reporter, phone, safeIdentity, JSON.stringify(safePhotos), JSON.stringify(timeline), batchToken || null, batchSize),
       ];
       // clientToken 与工单同批写入；若并发下被别的请求抢先插入，INSERT OR IGNORE 不报错，后续查回原工单
       if (clientToken) {
