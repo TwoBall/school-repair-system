@@ -163,21 +163,47 @@ function base64ToUtf8(b64) {
 }
 
 /**
- * 签名密钥。优先读 Pages 环境变量 JWT_SECRET；没配时退化为「本次 isolate 随机密钥」——
- * 源码里那个硬编码密钥已随仓库公开，谁都能照着签一个 admin token，
- * 所以这里绝不能再回落到固定字符串。随机密钥的代价只是冷启动后需要重新登录。
+ * 签名密钥。优先读 Pages 环境变量 JWT_SECRET。
+ *
+ * 没配时**不能**只用进程内随机密钥：Cloudflare 是多节点分布，登录请求在 A 节点签发、
+ * 下一个请求落到 B 节点就验不过（实测表现：登录成功但后续全部 401）。
+ * 所以未配置时生成一次随机密钥并**写进 D1 settings 持久化**，各节点共享同一份。
+ * 源码里那个硬编码密钥已随仓库公开，绝不能再回落到固定字符串。
  */
-let fallbackSecret = '';
-function getJwtSecret(env) {
-  const fromEnv = env && env.JWT_SECRET;
-  if (fromEnv) return fromEnv;
-  if (!fallbackSecret) {
-    const buf = new Uint8Array(32);
-    crypto.getRandomValues(buf);
-    fallbackSecret = Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
-    console.warn('[auth] 未配置 JWT_SECRET，已启用随机密钥，服务重启后需重新登录');
+let cachedSecret = '';
+async function getJwtSecret(env) {
+  if (env && env.JWT_SECRET) return env.JWT_SECRET;
+  if (cachedSecret) return cachedSecret;
+
+  const db = env && (env.DB || env.D1);
+  if (!db) {
+    // 拿不到库（本地测试）时只能退化为进程内随机
+    const b = new Uint8Array(32);
+    crypto.getRandomValues(b);
+    cachedSecret = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    return cachedSecret;
   }
-  return fallbackSecret;
+
+  try {
+    const row = await db.prepare("SELECT value FROM settings WHERE key = 'jwt_secret'").first();
+    if (row && row.value) {
+      cachedSecret = row.value;
+      return cachedSecret;
+    }
+  } catch (e) {
+    console.error('read jwt_secret failed:', e);
+  }
+
+  const buf = new Uint8Array(32);
+  crypto.getRandomValues(buf);
+  cachedSecret = Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+  try {
+    await db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind('jwt_secret', cachedSecret).run();
+    console.warn('[auth] 未配置 JWT_SECRET，已在数据库中生成并持久化随机密钥');
+  } catch (e) {
+    console.error('persist jwt_secret failed:', e);
+  }
+  return cachedSecret;
 }
 
 /** base64url → 字节，容忍缺 padding 与 -_ 两种字母表 */
@@ -193,7 +219,7 @@ function base64ToBytes(b64) {
 }
 
 async function createToken(payload, env) {
-  const secret = getJwtSecret(env);
+  const secret = await getJwtSecret(env);
   const header = utf8ToBase64(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const data = utf8ToBase64(JSON.stringify(payload));
   const enc = new TextEncoder();
@@ -221,7 +247,7 @@ async function verifyToken(token, env) {
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
       'raw',
-      enc.encode(getJwtSecret(env)),
+      enc.encode(await getJwtSecret(env)),
       { name: 'HMAC', hash: 'SHA-256' },
       false,
       ['verify']
@@ -1106,6 +1132,7 @@ export async function onRequest(context) {
         delete sMap.admin_password;
         delete sMap.worker_common_key;
         delete sMap.webhook_secret;
+        delete sMap.jwt_secret; // 签名密钥：泄露等于可以把任意人签成管理员
         return ok(sMap);
       }
       if (method === 'POST') {
@@ -1114,6 +1141,7 @@ export async function onRequest(context) {
         for (const [k, v] of Object.entries(body)) {
           // 口令留空 = 不修改，避免前端不回显导致误清空
           if ((k === 'admin_password' || k === 'worker_common_key' || k === 'webhook_secret') && !String(v || '').trim()) continue;
+          if (k === 'jwt_secret') continue; // 不允许从接口改写签名密钥
           stmts.push(db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind(k, String(v)));
         }
         if (stmts.length) await db.batch(stmts);
