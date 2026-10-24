@@ -230,7 +230,7 @@ function renderFormView() {
           <textarea class="control" id="f_desc" placeholder="请详细描述损坏情况、受损部位或具体现场问题，便于维修师傅提前备料"></textarea>
         </div>
         <div class="field">
-          <span class="label" id="f_photo_label">现场照片<span class="opt">选填，最多 5 张</span></span>
+          <span class="label" id="f_photo_label">现场照片<span class="opt">选填，最多 3 张</span></span>
           <div class="photos-grid" id="photosGrid" role="group" aria-labelledby="f_photo_label">
             ${photoUploadBtn()}
           </div>
@@ -1023,8 +1023,8 @@ function bindPhotoInput() {
     const file = e.target.files[0];
     e.target.value = ''; // 允许重复选择同一张
     if (!file) return;
-    if (uploadedPhotos.length >= 5) {
-      toast('最多上传 5 张照片');
+    if (uploadedPhotos.length >= 3) {
+      toast('最多上传 3 张照片');
       return;
     }
 
@@ -1398,7 +1398,7 @@ const openDetail = async (id) => {
           ${icon('star', 16)}
           <div>
             <strong>我的验收评分</strong>
-            <div class="mt-4 row gap-6">${stars(t.rating.score, 15)}<span class="fs-13">${t.rating.score} 星</span></div>
+            <div class="mt-4 row gap-6">${stars(t.rating.score, 15)}<span class="fs-13">${escapeHtml(t.rating.score)} 星</span></div>
             <div class="mt-4 fs-13">${escapeHtml(t.rating.comment || '未填写评价')}</div>
           </div>
         </div>`

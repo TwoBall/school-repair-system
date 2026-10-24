@@ -14,9 +14,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // 后端是 Cloudflare Pages Functions，仓库里没有 3000 端口的服务。
+    // 要联调得另开一个终端跑 wrangler，再把 /api 代理过去：
+    //   npx wrangler pages dev --port 8788
+    // 端口不一致时用 VITE_API_TARGET=http://localhost:xxxx npm run dev 覆盖。
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: process.env.VITE_API_TARGET || 'http://localhost:8788',
         changeOrigin: true,
       },
     },

@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS ticket_comments (id INTEGER PRIMARY KEY AUTOINCREMENT
 CREATE TABLE IF NOT EXISTS ticket_dedup (clientToken TEXT PRIMARY KEY, ticketId TEXT NOT NULL, createdAt INTEGER);
 CREATE INDEX IF NOT EXISTS idx_dedup_createdAt ON ticket_dedup(createdAt);
 CREATE INDEX IF NOT EXISTS idx_tickets_batch ON tickets(batchToken);
+-- 这四个索引原本只写在 schema.sql 里，而线上库是这里自动建的，等于一直没有：
+-- phone / status / assignee 恰好是最高频的三个查询条件（报修人查单与判重、师傅端轮询、管理端筛选）
+CREATE INDEX IF NOT EXISTS idx_tickets_phone ON tickets(phone);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+CREATE INDEX IF NOT EXISTS idx_tickets_assignee ON tickets(assignee);
+CREATE INDEX IF NOT EXISTS idx_tickets_createdAt ON tickets(createdAt);
 `;
 
 // 楼栋字典（编号 + 用途）。A=教学楼 / B=实训楼 / C=宿舍
@@ -51,6 +57,11 @@ const DEFAULT_CATEGORIES = ['水电照明', '门窗家具', '空调风扇', '给
 // 全部依赖这三个字面量，接口可被直调，必须在写入侧兜住，否则会落进库里变成筛不出的脏值。
 const URGENCY_LEVELS = ['普通', '较急', '紧急'];
 const IDENTITIES = ['教职工', '职工', '学生', '访客'];
+
+// 上传上限。前端压缩后一般 300KB 以内，放宽到 10MB 兜住直接拍照的原图
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+// 文本字段长度上限，防止直调接口灌超长文本撑爆 D1 单行（1MB 硬限）
+const MAX_LEN = { desc: 500, result: 500, reporter: 20, room: 30, note: 100, comment: 200, material: 200 };
 
 let schemaChecked = false;
 async function ensureSchema(db) {
@@ -151,7 +162,38 @@ function base64ToUtf8(b64) {
   return new TextDecoder().decode(bytes);
 }
 
-async function createToken(payload, secret = 'cf-repair-key-2026') {
+/**
+ * 签名密钥。优先读 Pages 环境变量 JWT_SECRET；没配时退化为「本次 isolate 随机密钥」——
+ * 源码里那个硬编码密钥已随仓库公开，谁都能照着签一个 admin token，
+ * 所以这里绝不能再回落到固定字符串。随机密钥的代价只是冷启动后需要重新登录。
+ */
+let fallbackSecret = '';
+function getJwtSecret(env) {
+  const fromEnv = env && env.JWT_SECRET;
+  if (fromEnv) return fromEnv;
+  if (!fallbackSecret) {
+    const buf = new Uint8Array(32);
+    crypto.getRandomValues(buf);
+    fallbackSecret = Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+    console.warn('[auth] 未配置 JWT_SECRET，已启用随机密钥，服务重启后需重新登录');
+  }
+  return fallbackSecret;
+}
+
+/** base64url → 字节，容忍缺 padding 与 -_ 两种字母表 */
+function base64ToBytes(b64) {
+  let s = String(b64).replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const binary = atob(s);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function createToken(payload, env) {
+  const secret = getJwtSecret(env);
   const header = utf8ToBase64(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const data = utf8ToBase64(JSON.stringify(payload));
   const enc = new TextEncoder();
@@ -167,11 +209,25 @@ async function createToken(payload, secret = 'cf-repair-key-2026') {
   return header + "." + data + "." + sig;
 }
 
-async function verifyToken(token, secret = 'cf-repair-key-2026') {
+/**
+ * 校验签名后再解 payload。以前只 base64 解 payload、从不看第三段，
+ * 任何人都能手搓一个 {role:'admin'} 的 token 直接接管系统。
+ */
+async function verifyToken(token, env) {
   if (!token || typeof token !== 'string') return null;
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   try {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(getJwtSecret(env)),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    const valid = await crypto.subtle.verify('HMAC', key, base64ToBytes(parts[2]), enc.encode(parts[0] + "." + parts[1]));
+    if (!valid) return null;
     const payload = JSON.parse(base64ToUtf8(parts[1]));
     if (payload.exp && payload.exp < Date.now()) return null;
     return payload;
@@ -186,7 +242,7 @@ async function checkAdmin(request, env) {
 
   const authHeader = request.headers.get('Authorization') || '';
   if (authHeader.startsWith('Bearer ')) {
-    const payload = await verifyToken(authHeader.slice(7).trim());
+    const payload = await verifyToken(authHeader.slice(7).trim(), env);
     if (payload && payload.role === 'admin') return true;
   }
 
@@ -194,6 +250,13 @@ async function checkAdmin(request, env) {
   if (keyHeader && keyHeader === adminPwd) return true;
 
   return false;
+}
+
+/** 取出带指定角色的 token payload，不匹配返回 null */
+async function requireRole(request, env, role) {
+  const h = request.headers.get('Authorization') || '';
+  const p = h.startsWith('Bearer ') ? await verifyToken(h.slice(7).trim(), env) : null;
+  return p && p.role === role ? p : null;
 }
 
 // ------------------- SLA 计算与工单格式化 -------------------
@@ -309,10 +372,10 @@ async function moveDictItem(db, table, id, dir) {
 
 // ------------------- 角色鉴权与脱敏 -------------------
 // 前端 token 解密后带 role，用来区分"自己看自己"和"管理员看全部"
-async function getAuthRole(request) {
+async function getAuthRole(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   if (!authHeader.startsWith('Bearer ')) return null;
-  const payload = await verifyToken(authHeader.slice(7).trim());
+  const payload = await verifyToken(authHeader.slice(7).trim(), env);
   return payload && payload.role ? payload.role : null;
 }
 
@@ -322,10 +385,14 @@ function maskPhone(v) {
   return s.length >= 7 ? s.slice(0, 3) + '****' + s.slice(-4) : s;
 }
 
-// 报修人自己的记录可以看全号：前端查询时带了 ?phone= 就算本人查询
-async function publicView(request, env, tickets, selfQuery) {
-  const role = await getAuthRole(request);
-  if (role === 'admin' || selfQuery) return tickets;
+/**
+ * 只有管理员能看全号。以前「带了 ?phone= 就算本人查询」也放行全号，
+ * 但报修人端根本不登录、无从证明机主身份，等于谁都能遍历号段把全校联系方式拉走。
+ * 而且这个全号前端压根没用到：列表卡片不显示手机号，详情走单条查询本来就会打码。
+ */
+async function publicView(request, env, tickets) {
+  const role = await getAuthRole(request, env);
+  if (role === 'admin') return tickets;
   return tickets.map((t) => ({ ...t, phone: maskPhone(t.phone) }));
 }
 
@@ -411,6 +478,17 @@ export async function onRequest(context) {
   const path = url.pathname;
   const method = request.method;
 
+  /**
+   * 把旁支的异步任务托管给平台的 waitUntil。
+   * Webhook 以前是 sendWebhook(...).catch(() => {}) 丢出去不管，
+   * Cloudflare 在响应返回后可能直接掐断未决子请求 —— 通知会静默丢失。
+   */
+  const notify = (p) => {
+    const task = Promise.resolve(p).catch(() => {});
+    if (typeof context.waitUntil === 'function') context.waitUntil(task);
+    return task;
+  };
+
   if (method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
@@ -462,7 +540,7 @@ export async function onRequest(context) {
       if (role === 'admin') {
         const adminPwd = sMap.admin_password || 'admin888';
         if (key === adminPwd || password === adminPwd) {
-          const token = await createToken({ role: 'admin', name: '总务处管理员', exp: Date.now() + 7 * 86400000 });
+          const token = await createToken({ role: 'admin', name: '总务处管理员', exp: Date.now() + 7 * 86400000 }, env);
           return ok({ token, role: 'admin', name: '总务处' });
         }
         return fail('管理员口令不正确');
@@ -470,18 +548,19 @@ export async function onRequest(context) {
 
       if (role === 'worker') {
         const workerCommonKey = sMap.worker_common_key || 'worker888';
-        if (key === workerCommonKey) {
-          const token = await createToken({ role: 'worker', name: body.name || '维修师傅', exp: Date.now() + 7 * 86400000 });
-          return ok({ token, role: 'worker', name: body.name || '维修师傅' });
-        }
-
-        const worker = await db.prepare('SELECT * FROM workers WHERE username = ? OR phone = ?').bind(username, username).first();
-        if (!worker || worker.password !== password) {
+        // 公共口令与个人密码走同一条路径：先命中启用中的师傅账号，再验口令。
+        // 以前公共口令是个独立分支、直接拿 body.name 签发 token，而前端压根不传 key，
+        // 那段是死代码 —— 结果系统设置里的「师傅公共口令」改了根本不生效。
+        const account = String(username || '').trim();
+        if (!account) return fail('请填写师傅工号或手机号');
+        const worker = await db.prepare('SELECT * FROM workers WHERE username = ? OR phone = ?').bind(account, account).first();
+        if (!worker) return fail('师傅工号或密码不正确');
+        if (!worker.active) return fail('该师傅账号已停用');
+        if (password !== worker.password && key !== workerCommonKey) {
           return fail('师傅工号或密码不正确');
         }
-        if (!worker.active) return fail('该师傅账号已停用');
 
-        const token = await createToken({ role: 'worker', workerId: worker.id, name: worker.name, username: worker.username, exp: Date.now() + 7 * 86400000 });
+        const token = await createToken({ role: 'worker', workerId: worker.id, name: worker.name, username: worker.username, exp: Date.now() + 7 * 86400000 }, env);
         return ok({ token, role: 'worker', workerId: worker.id, name: worker.name, phone: worker.phone });
       }
 
@@ -491,7 +570,7 @@ export async function onRequest(context) {
     // 师傅自助修改登录密码（师傅端「修改密码」弹窗依赖此路由）
     if (path === '/api/auth/change-password' && method === 'POST') {
       const authHeader = request.headers.get('Authorization') || '';
-      const payload = authHeader.startsWith('Bearer ') ? await verifyToken(authHeader.slice(7).trim()) : null;
+      const payload = authHeader.startsWith('Bearer ') ? await verifyToken(authHeader.slice(7).trim(), env) : null;
       if (!payload || payload.role !== 'worker') return fail('请先登录师傅端', 401);
 
       const body = await request.json().catch(() => ({}));
@@ -514,7 +593,18 @@ export async function onRequest(context) {
       const file = formData.get('file');
       if (!file) return fail('未检测到上传文件');
 
-      const ext = file.name ? file.name.substring(file.name.lastIndexOf('.')) : '.jpg';
+      // 上传口子是公开的（报修人不登录就要能传照片），所以必须自己卡住类型与体积，
+      // 否则 R2 会被当成免费图床：任何人都能往里塞任意大文件，账单是你的。
+      if (!String(file.type || '').startsWith('image/')) return fail('只能上传图片文件');
+      if (file.size > MAX_UPLOAD_BYTES) return fail(`图片不能超过 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB`);
+      if (file.size === 0) return fail('文件内容为空');
+
+      // 扩展名只从 MIME 推导，不信任 file.name（可以伪造 xxx.jpg 实际传可执行文件）
+      const extMap = {
+        'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp',
+        'image/gif': '.gif', 'image/heic': '.heic', 'image/heif': '.heif',
+      };
+      const ext = extMap[file.type] || '.jpg';
       const fileKey = `bx-${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`;
 
       const bucket = env.PHOTOS || env.BUCKET || env.R2;
@@ -560,10 +650,17 @@ export async function onRequest(context) {
       const category = url.searchParams.get('category');
       const batchToken = url.searchParams.get('batchToken');
 
+      // 师傅端只应看到派给自己的单：带 worker token 时以 token 里的姓名为准，
+      // 忽略前端传来的 assignee，避免改个参数就翻到别人的工单
+      const authHeaderList = request.headers.get('Authorization') || '';
+      const authPayload = authHeaderList.startsWith('Bearer ') ? await verifyToken(authHeaderList.slice(7).trim(), env) : null;
+      const workerName = authPayload && authPayload.role === 'worker' ? authPayload.name : '';
+
       let sql = 'SELECT * FROM tickets WHERE 1=1';
       const params = [];
       if (phone) { sql += ' AND phone = ?'; params.push(phone); }
-      if (assignee) { sql += ' AND assignee = ?'; params.push(assignee); }
+      if (workerName) { sql += ' AND assignee = ?'; params.push(workerName); }
+      else if (assignee) { sql += ' AND assignee = ?'; params.push(assignee); }
       if (status && status !== 'all') { sql += ' AND status = ?'; params.push(status); }
       if (urgency && urgency !== 'all') { sql += ' AND urgency = ?'; params.push(urgency); }
       if (building && building !== 'all') { sql += ' AND building = ?'; params.push(building); }
@@ -581,7 +678,7 @@ export async function onRequest(context) {
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));
 
-      return ok(await publicView(request, env, rows.map((r) => formatTicket(r, sMap)), Boolean(phone)));
+      return ok(await publicView(request, env, rows.map((r) => formatTicket(r, sMap))));
     }
 
     if (path.startsWith('/api/tickets/') && method === 'GET' && !path.includes('/comments')) {
@@ -596,13 +693,23 @@ export async function onRequest(context) {
       const formatted = formatTicket(t, sMap);
       const comments = (await db.prepare('SELECT * FROM ticket_comments WHERE ticketId = ? ORDER BY createdAt ASC').bind(id).all()).results || [];
       formatted.comments = comments;
-      return ok((await publicView(request, env, [formatted], false))[0]);
+      return ok((await publicView(request, env, [formatted]))[0]);
     }
 
     if (path === '/api/tickets' && method === 'POST') {
       const body = await request.json();
-      const { building, room, category, urgency, desc, reporter, phone, identity, photos } = body;
+      const { building, category, urgency, identity, photos } = body;
+      const room = String(body.room || '').trim();
+      const desc = String(body.desc || '').trim();
+      const reporter = String(body.reporter || '').trim();
+      const phone = String(body.phone || '').trim();
       if (!room || !desc || !reporter || !phone) return fail('请填写必填项');
+      // 手机号既是查单凭证也是联系依据，必须卡格式；文本一律限长，
+      // 否则直调接口能灌几万字进去，D1 单行 1MB 会被撑爆
+      if (!/^1\d{10}$/.test(phone)) return fail('请填写正确的 11 位手机号');
+      if (room.length > MAX_LEN.room) return fail('房间号过长');
+      if (reporter.length > MAX_LEN.reporter) return fail('报修人姓名过长');
+      if (desc.length > MAX_LEN.desc) return fail(`故障描述不能超过 ${MAX_LEN.desc} 字`);
 
       // 幂等：同一个 clientToken 重复提交（网络重试、用户连点）只认第一条
       const clientToken = typeof body.clientToken === 'string' ? body.clientToken.trim().slice(0, 64) : '';
@@ -675,7 +782,7 @@ export async function onRequest(context) {
       }
 
       // 发送通知
-      sendWebhook(sMap, 'ticket_create', formatTicket(created, sMap)).catch(() => {});
+      notify(sendWebhook(sMap, 'ticket_create', formatTicket(created, sMap)));
 
       // 幂等表只用来挡短时间内的重试，7 天前的记录已无意义，顺手清掉避免无限膨胀
       // 清理失败不能影响建单结果，所以单独兜住
@@ -688,31 +795,37 @@ export async function onRequest(context) {
       return ok(formatTicket(created, sMap));
     }
 
-    // 派工
-    if (path.endsWith('/assign') && method === 'POST') {
+    // 派工（管理员）
+    if (path.startsWith('/api/tickets/') && path.endsWith('/assign') && method === 'POST') {
+      if (!(await requireRole(request, env, 'admin'))) return fail('请先登录管理端', 401);
       const id = path.split('/')[3];
       const body = await request.json();
       const t = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
       if (!t) return fail('工单不存在', 404);
 
+      const workerName = String(body.worker || '').trim().slice(0, 20);
+      if (!workerName) return fail('请选择派工师傅');
+
       let tl = [];
       try { tl = JSON.parse(t.timeline || '[]'); } catch (e) {}
       const now = Date.now();
-      tl.push({ t: now, by: '总务处', action: '派单给 ' + body.worker, note: body.note || '' });
+      const note = String(body.note || '').trim().slice(0, 100);
+      tl.push({ t: now, by: '总务处', action: '派单给 ' + workerName, note });
 
       await db.prepare('UPDATE tickets SET status = ?, assignee = ?, timeline = ? WHERE id = ?')
-        .bind('assigned', body.worker, JSON.stringify(tl), id).run();
+        .bind('assigned', workerName, JSON.stringify(tl), id).run();
 
       const updated = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));
-      sendWebhook(sMap, 'ticket_assign', { ...formatTicket(updated, sMap), note: body.note }).catch(() => {});
+      notify(sendWebhook(sMap, 'ticket_assign', { ...formatTicket(updated, sMap), note }));
       return ok(formatTicket(updated, sMap));
     }
 
-    // 师傅接单
-    if (path.endsWith('/accept') && method === 'POST') {
+    // 师傅接单（师傅身份）
+    if (path.startsWith('/api/tickets/') && path.endsWith('/accept') && method === 'POST') {
+      if (!(await requireRole(request, env, 'worker'))) return fail('请先登录师傅端', 401);
       const id = path.split('/')[3];
       const t = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
       if (!t) return fail('工单不存在', 404);
@@ -729,43 +842,48 @@ export async function onRequest(context) {
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));
       // 接单此前是唯一没有群通知的节点，报修人和群里都看不到"师傅已出发"
-      sendWebhook(sMap, 'ticket_accept', formatTicket(updated, sMap)).catch(() => {});
+      notify(sendWebhook(sMap, 'ticket_accept', formatTicket(updated, sMap)));
       return ok(formatTicket(updated, sMap));
     }
 
-    // 完工
-    if (path.endsWith('/finish') && method === 'POST') {
+    // 完工（师傅身份）
+    if (path.startsWith('/api/tickets/') && path.endsWith('/finish') && method === 'POST') {
+      if (!(await requireRole(request, env, 'worker'))) return fail('请先登录师傅端', 401);
       const id = path.split('/')[3];
       const body = await request.json();
       const t = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
       if (!t) return fail('工单不存在', 404);
 
+      const result = String(body.result || '').trim().slice(0, 500);
+      if (!result) return fail('请填写维修处理结果说明');
+
       let tl = [];
       try { tl = JSON.parse(t.timeline || '[]'); } catch (e) {}
       const now = Date.now();
-      const material = typeof body.material === 'string' ? body.material.trim() : '';
-      const materialSource = typeof body.materialSource === 'string' ? body.materialSource.trim() : '';
+      const material = typeof body.material === 'string' ? body.material.trim().slice(0, 200) : '';
+      const materialSource = typeof body.materialSource === 'string' ? body.materialSource.trim().slice(0, 200) : '';
       // 完工照片同样是外部可控输入，走同一套校验
       const safeFinishPhotos = sanitizePhotos(body.photos);
       if (safeFinishPhotos === null) return fail('完工照片最多 3 张，且必须来自系统上传');
-      const noteParts = [body.result];
+      const noteParts = [result];
       if (material) noteParts.push(`耗材/配件：${material}`);
       if (materialSource) noteParts.push(`配件购方：${materialSource}`);
       tl.push({ t: now, by: t.assignee || '维修师傅', action: '维修完成，等待验收', note: noteParts.filter(Boolean).join('；') });
 
       await db.prepare('UPDATE tickets SET status = ?, completedAt = ?, result = ?, material = ?, materialSource = ?, finishPhotos = ?, timeline = ? WHERE id = ?')
-        .bind('done', now, body.result, material, materialSource, JSON.stringify(safeFinishPhotos), JSON.stringify(tl), id).run();
+        .bind('done', now, result, material, materialSource, JSON.stringify(safeFinishPhotos), JSON.stringify(tl), id).run();
 
       const updated = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));
-      sendWebhook(sMap, 'ticket_finish', formatTicket(updated, sMap)).catch(() => {});
+      notify(sendWebhook(sMap, 'ticket_finish', formatTicket(updated, sMap)));
       return ok(true);
     }
 
-    // 驳回工单：管理端「驳回」按钮依赖此路由，缺了会报「未知 API」
-    if (path.endsWith('/reject') && method === 'POST') {
+    // 驳回工单（管理员）：管理端「驳回」按钮依赖此路由，缺了会报「未知 API」
+    if (path.startsWith('/api/tickets/') && path.endsWith('/reject') && method === 'POST') {
+      if (!(await requireRole(request, env, 'admin'))) return fail('请先登录管理端', 401);
       const id = path.split('/')[3];
       const body = await request.json().catch(() => ({}));
       const t = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
@@ -786,12 +904,12 @@ export async function onRequest(context) {
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));
-      sendWebhook(sMap, 'ticket_reject', { ...formatTicket(updated, sMap), note }).catch(() => {});
+      notify(sendWebhook(sMap, 'ticket_reject', { ...formatTicket(updated, sMap), note }));
       return ok(formatTicket(updated, sMap), '已驳回该工单');
     }
 
-    // 催单
-    if (path.endsWith('/remind') && method === 'POST') {
+    // 催单（报修人不登录，靠工单号 + 10 分钟限频兜底）
+    if (path.startsWith('/api/tickets/') && path.endsWith('/remind') && method === 'POST') {
       const id = path.split('/')[3];
       const body = await request.json();
       const t = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
@@ -805,7 +923,8 @@ export async function onRequest(context) {
       let tl = [];
       try { tl = JSON.parse(t.timeline || '[]'); } catch (e) {}
       const count = (t.remindCount || 0) + 1;
-      tl.push({ t: now, by: t.reporter, action: `第 ${count} 次催单`, note: body.note || '加急催办' });
+      const note = String(body.note || '').trim().slice(0, 100) || '加急催办';
+      tl.push({ t: now, by: t.reporter, action: `第 ${count} 次催单`, note });
 
       await db.prepare('UPDATE tickets SET lastRemindAt = ?, remindCount = ?, timeline = ? WHERE id = ?')
         .bind(now, count, JSON.stringify(tl), id).run();
@@ -813,35 +932,42 @@ export async function onRequest(context) {
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));
-      sendWebhook(sMap, 'ticket_remind', { ...t, remindCount: count, note: body.note }).catch(() => {});
+      notify(sendWebhook(sMap, 'ticket_remind', { ...t, remindCount: count, note }));
       return ok(null, '催单提醒已发出！');
     }
 
-    // 验收评价
-    if (path.endsWith('/rate') && method === 'POST') {
+    // 验收评价（报修人凭工单号评价，不登录；但必须是已完工且没评过）
+    if (path.startsWith('/api/tickets/') && path.endsWith('/rate') && method === 'POST') {
       const id = path.split('/')[3];
       const body = await request.json();
       const t = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
       if (!t) return fail('工单不存在', 404);
+      if (t.status !== 'done') return fail('工单尚未完工，暂不能评价');
+      if (t.rating && t.rating !== 'null') return fail('该工单已评价过');
+
+      // 评分收敛到 1~5 的整数。以前 body.score 原样入库：9999 能写进去，
+      // 传个字符串还能在管理端/报修端未转义地渲染出来（存储型 XSS）。
+      const score = Math.min(5, Math.max(1, parseInt(body.score, 10) || 5));
+      const comment = String(body.comment || '').trim().slice(0, 200) || '满意';
 
       const now = Date.now();
       let tl = [];
       try { tl = JSON.parse(t.timeline || '[]'); } catch (e) {}
-      tl.push({ t: now, by: t.reporter, action: '验收评价', note: `评分：${body.score}星 | ${body.comment}` });
+      tl.push({ t: now, by: t.reporter, action: '验收评价', note: `评分：${score}星 | ${comment}` });
 
-      const ratingObj = { score: body.score || 5, comment: body.comment || '满意' };
+      const ratingObj = { score, comment };
       await db.prepare('UPDATE tickets SET status = ?, closedAt = ?, rating = ?, timeline = ? WHERE id = ?')
         .bind('closed', now, JSON.stringify(ratingObj), JSON.stringify(tl), id).run();
 
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));
-      sendWebhook(sMap, 'ticket_rate', { ...t, score: body.score, comment: body.comment }).catch(() => {});
+      notify(sendWebhook(sMap, 'ticket_rate', { ...t, score, comment }));
       return ok(true);
     }
 
-    // 留言
-    if (path.endsWith('/comments')) {
+    // 留言（三端都能留，报修端不登录，故不鉴权，但内容一律限长）
+    if (path.startsWith('/api/tickets/') && path.endsWith('/comments')) {
       const id = path.split('/')[3];
       if (method === 'GET') {
         const rows = (await db.prepare('SELECT * FROM ticket_comments WHERE ticketId = ? ORDER BY createdAt ASC').bind(id).all()).results || [];
@@ -849,8 +975,12 @@ export async function onRequest(context) {
       }
       if (method === 'POST') {
         const body = await request.json();
+        const content = String(body.content || '').trim().slice(0, 200);
+        if (!content) return fail('留言内容不能为空');
+        const senderName = String(body.senderName || '').trim().slice(0, 20) || '匿名';
+        const senderRole = ['admin', 'worker', 'user'].includes(body.senderRole) ? body.senderRole : 'user';
         const r = await db.prepare('INSERT INTO ticket_comments (ticketId, senderRole, senderName, content, createdAt) VALUES (?, ?, ?, ?, ?)')
-          .bind(id, body.senderRole, body.senderName, body.content, Date.now()).run();
+          .bind(id, senderRole, senderName, content, Date.now()).run();
         return ok(r);
       }
     }
@@ -1000,7 +1130,12 @@ export async function onRequest(context) {
     // 统计大屏
     if (path === '/api/stats/dashboard') {
       if (!(await checkAdmin(request, env))) return fail('请先登录管理端', 401);
-      const tickets = (await db.prepare('SELECT * FROM tickets').all()).results || [];
+      // 只取统计用得上的列。photos / finishPhotos / desc / result 这些大字段
+      // 每条都要从 D1 读出来再丢掉，工单多了纯属浪费。
+      // timeline 必须留：SLA 超时判定要靠它找派单/接单时间点。
+      const tickets = (await db.prepare(
+        'SELECT status, building, category, urgency, assignee, rating, timeline, createdAt, completedAt, closedAt FROM tickets'
+      ).all()).results || [];
       const sRows = (await db.prepare('SELECT key, value FROM settings').all()).results || [];
       const sMap = {};
       sRows.forEach((r) => (sMap[r.key] = r.value));

@@ -562,7 +562,7 @@ const openAdminDetail = async (id) => {
     const ratingHtml = t.rating
       ? `<div class="alert alert-warn mt-12 col gap-4 start">
           ${icon('star', 16)}
-          <div><strong>用户评分</strong> ${t.rating.score} 星
+          <div><strong>用户评分</strong> ${escapeHtml(t.rating.score)} 星
             <div class="mt-4">${escapeHtml(t.rating.comment || '未填写评价')}</div>
           </div>
         </div>`
