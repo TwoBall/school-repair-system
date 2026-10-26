@@ -5,11 +5,11 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# 替换为国内镜像源（阿里云/清华源），大幅加速国内服务器构建速度
+# 替换为腾讯云高速源（在腾讯云主机走内网千兆专线，极大提升拉包速度）
 RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+      sed -i 's/deb.debian.org/mirrors.tencent.com/g' /etc/apt/sources.list.d/debian.sources; \
     elif [ -f /etc/apt/sources.list ]; then \
-      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list; \
+      sed -i 's/deb.debian.org/mirrors.tencent.com/g' /etc/apt/sources.list; \
     fi && \
     apt-get update && apt-get install -y --no-install-recommends \
       python3 \
@@ -19,8 +19,9 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
 
 COPY package.json ./
 
-# 配置 npm 使用国内淘宝镜像源加速下载
+# 配置 npm 使用国内淘宝镜像源与二进制预编译镜像加速下载
 RUN npm config set registry https://registry.npmmirror.com && \
+    npm config set better_sqlite3_binary_host_mirror https://registry.npmmirror.com/-/binary/better-sqlite3/ && \
     npm install
 
 COPY . .
@@ -43,11 +44,11 @@ ENV TZ=Asia/Shanghai \
     DATA_DIR=/app/data \
     STATIC_DIR=/app/dist
 
-# 替换国内源加速 tzdata 安装
+# 替换腾讯云高速源加速 tzdata 安装
 RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+      sed -i 's/deb.debian.org/mirrors.tencent.com/g' /etc/apt/sources.list.d/debian.sources; \
     elif [ -f /etc/apt/sources.list ]; then \
-      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list; \
+      sed -i 's/deb.debian.org/mirrors.tencent.com/g' /etc/apt/sources.list; \
     fi && \
     apt-get update && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/* \
