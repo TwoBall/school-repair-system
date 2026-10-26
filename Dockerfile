@@ -19,9 +19,8 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
 
 COPY package.json ./
 
-# 配置 npm 使用国内淘宝镜像源与二进制预编译镜像加速下载
+# 配置 npm 使用国内淘宝镜像源加速下载
 RUN npm config set registry https://registry.npmmirror.com && \
-    npm config set better_sqlite3_binary_host_mirror https://registry.npmmirror.com/-/binary/better-sqlite3/ && \
     npm install
 
 COPY . .
