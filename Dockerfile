@@ -17,11 +17,11 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
       g++ \
     && rm -rf /var/lib/apt/lists/*
 
-COPY package.json ./
+COPY package.json package-lock.json* ./
 
 # 配置 npm 使用国内淘宝镜像源加速下载
 RUN npm config set registry https://registry.npmmirror.com && \
-    npm install
+    npm install --no-audit
 
 COPY . .
 
