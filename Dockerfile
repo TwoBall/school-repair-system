@@ -5,17 +5,23 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# 安装构建原生模块 (better-sqlite3) 所需的基础工具
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    make \
-    g++ \
+# 替换为国内镜像源（阿里云/清华源），大幅加速国内服务器构建速度
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list; \
+    fi && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      make \
+      g++ \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json ./
 
-# 安装全量依赖（包含 vite 等构建工具）
-RUN npm install
+# 配置 npm 使用国内淘宝镜像源加速下载
+RUN npm config set registry https://registry.npmmirror.com && \
+    npm install
 
 COPY . .
 
@@ -37,8 +43,13 @@ ENV TZ=Asia/Shanghai \
     DATA_DIR=/app/data \
     STATIC_DIR=/app/dist
 
-# 安装时区支持，创建数据挂载目录
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+# 替换国内源加速 tzdata 安装
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list; \
+    fi && \
+    apt-get update && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/data
 
@@ -57,4 +68,3 @@ VOLUME ["/app/data"]
 EXPOSE 8080
 
 CMD ["node", "server.js"]
-
