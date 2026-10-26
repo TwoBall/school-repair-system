@@ -1,7 +1,7 @@
 # ========================================================
 # Stage 1: 构建阶段 (编译前端并安装生产依赖)
 # ========================================================
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 
 WORKDIR /app
 
@@ -31,7 +31,7 @@ RUN npm run build && npm prune --omit=dev
 # ========================================================
 # Stage 2: 生产运行阶段 (精简运行时镜像)
 # ========================================================
-FROM node:20-slim AS runner
+FROM node:22-slim AS runner
 
 WORKDIR /app
 
