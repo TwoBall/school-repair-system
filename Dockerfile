@@ -57,3 +57,4 @@ VOLUME ["/app/data"]
 EXPOSE 8080
 
 CMD ["node", "server.js"]
+

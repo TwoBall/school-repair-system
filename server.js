@@ -304,3 +304,4 @@ server.listen(PORT, HOST, () => {
   console.log(`  - 照片存储目录: ${PHOTOS_DIR}`);
   console.log(`====================================================`);
 });
+
