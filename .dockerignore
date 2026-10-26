@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.github
+.wrangler
+data
+uploads
+*.log
+.DS_Store
+.workbuddy
+.tmp-smoke

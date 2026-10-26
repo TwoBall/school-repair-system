@@ -3,9 +3,7 @@ dist/
 .wrangler/
 package-lock.json
 npm-debug.log
-data/*.db
-data/*.db-wal
-data/*.db-shm
+data/*
 !data/.gitkeep
 uploads/*
 !uploads/.gitkeep

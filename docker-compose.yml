@@ -1,0 +1,24 @@
+services:
+  school-repair:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: school-repair-system:latest
+    container_name: school-repair-app
+    restart: unless-stopped
+    ports:
+      # 映射到宿主机 80 端口（如宿主机 80 端口已被 Nginx 占用，可改为 "8080:8080"）
+      - "80:8080"
+    environment:
+      - PORT=8080
+      - TZ=Asia/Shanghai
+      # 可选：自定义签名密钥（留空时系统会在数据库中自动生成强随机密钥）
+      # - JWT_SECRET=my_custom_jwt_secret_key_123456
+    volumes:
+      # 持久化挂载目录：数据库与照片保存在宿主机的 ./data 目录下
+      - ./data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
